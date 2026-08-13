@@ -43,7 +43,7 @@ musictrain segment
 musictrain split
 
 # 4. test generation on MPS
-musictrain infer --prompt "cinematic hip hop chorus, 96 BPM, A minor, dark piano, deep 808 bass"
+musictrain infer --prompt "melodic trap hook, 78 BPM, A minor, heavy 808 bass, autotune vocals, trap hi-hats"
 
 # 5. check the output's tempo
 musictrain check --path outputs/latest.wav --bpm 96 --fix
@@ -79,7 +79,7 @@ source_id,license,genre,mood,instruments,section,description,song_id,section_typ
 
 `mood` and `instruments` accept comma/semicolon/pipe-separated lists. The
 `description` field is what MusicGen conditions on, so keep its vocabulary
-consistent (e.g. `"chorus, 96 BPM, A minor, wide strings, heavy drums"`).
+consistent (e.g. `"hook, 78 BPM, A minor, heavy 808 bass, autotune vocals, trap hi-hats"`).
 
 Scaffold a template and enforce the vocabulary:
 

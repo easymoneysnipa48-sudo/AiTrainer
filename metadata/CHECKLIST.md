@@ -31,10 +31,10 @@ Keep descriptions identical in structure so the model learns the slot meanings:
 Examples:
 
 ```
-intro, 92 BPM, A minor, sparse piano, atmospheric pads, low energy
-verse, 92 BPM, A minor, restrained drums, narrative mood, medium energy
-chorus, 96 BPM, A minor, wide strings, heavy drums, memorable melodic hook
-outro, 92 BPM, A minor, reduced drums, fading piano, reflective mood
+intro, 75 BPM, A minor, dark piano loop, atmospheric pads, low energy
+verse, 72 BPM, E minor, melancholic guitar loop, deep 808, restrained snare, medium energy
+hook, 78 BPM, A minor, heavy 808 bass, autotune vocals, trap hi-hats, high energy
+outro, 75 BPM, A minor, fading piano, reduced drums, reflective mood
 ```
 
 ## Controlled vocabulary
@@ -45,14 +45,15 @@ These exact strings are enforced by `musictrain labels --check`. Edit
 **Section / section_type**
 
 ```
-intro | verse | pre-chorus | chorus | bridge | outro | instrumental-transition | full-song
+intro | verse | pre-chorus | chorus | hook | bridge | outro | instrumental-transition | full-song
 ```
 
 **Genre**
 
 ```
-cinematic hip hop | hip hop | trap | lo-fi | ambient | electronic | orchestral
-| cinematic | film score | pop | rnb | jazz | synthwave | drill
+melodic trap | pain music | emo rap | trap | drill | southern trap | hip hop
+| cinematic hip hop | lo-fi | ambient | electronic | orchestral | film score
+| pop | rnb | jazz | synthwave
 ```
 
 **Mood** (combine with `|`)
@@ -66,9 +67,11 @@ dark | emotional | determined | energetic | calm | melancholic | uplifting
 **Instruments** (combine with `|`)
 
 ```
-piano | 808 bass | bass | strings | drums | synths | pads | guitar
-| acoustic guitar | electric guitar | choir | brass | percussion | keys | organ
-| flute | harp | bells | vocals | vinyl crackle | riser
+piano | keys | guitar loop | acoustic guitar | electric guitar | 808 bass
+| sub bass | bass | 808 slides | strings | pads | synths | synth lead | drums
+| percussion | trap hi-hats | snare | clap | snare roll | brass | choir
+| vocals | autotune vocals | ad-libs | organ | flute | harp | bells
+| vinyl crackle | riser
 ```
 
 ## Workflow

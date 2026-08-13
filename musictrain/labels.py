@@ -16,9 +16,10 @@ from . import console
 # Controlled vocabulary — edit to suit your musical style.
 VOCAB: Dict[str, Set[str]] = {
     "genre": {
-        "cinematic hip hop", "hip hop", "trap", "lo-fi", "ambient",
-        "electronic", "orchestral", "cinematic", "film score", "pop",
-        "rnb", "jazz", "synthwave", "drill",
+        "melodic trap", "pain music", "emo rap", "trap", "drill",
+        "southern trap", "hip hop", "cinematic hip hop", "lo-fi", "ambient",
+        "electronic", "orchestral", "film score", "pop", "rnb", "jazz",
+        "synthwave",
     },
     "mood": {
         "dark", "emotional", "determined", "energetic", "calm",
@@ -27,17 +28,19 @@ VOCAB: Dict[str, Set[str]] = {
         "atmospheric",
     },
     "instruments": {
-        "piano", "808 bass", "bass", "strings", "drums", "synths", "pads",
-        "guitar", "acoustic guitar", "electric guitar", "choir", "brass",
-        "percussion", "keys", "organ", "flute", "harp", "bells", "vocals",
+        "piano", "keys", "guitar loop", "acoustic guitar", "electric guitar",
+        "808 bass", "sub bass", "bass", "808 slides", "strings", "pads",
+        "synths", "synth lead", "drums", "percussion", "trap hi-hats",
+        "snare", "clap", "snare roll", "brass", "choir", "vocals",
+        "autotune vocals", "ad-libs", "organ", "flute", "harp", "bells",
         "vinyl crackle", "riser",
     },
     "section": {
-        "intro", "verse", "pre-chorus", "chorus", "bridge", "outro",
+        "intro", "verse", "pre-chorus", "chorus", "hook", "bridge", "outro",
         "instrumental-transition", "full-song",
     },
     "section_type": {
-        "intro", "verse", "pre-chorus", "chorus", "bridge", "outro",
+        "intro", "verse", "pre-chorus", "chorus", "hook", "bridge", "outro",
         "instrumental-transition", "full-song",
     },
 }
@@ -54,28 +57,28 @@ EXAMPLES = [
         "source_id": "track_001", "song_id": "song_001",
         "section": "intro", "section_type": "intro",
         "section_index": "1", "start_time": "0.0", "end_time": "8.0",
-        "genre": "cinematic hip hop", "mood": "dark|atmospheric",
-        "instruments": "piano|pads", "energy": "0.4",
+        "genre": "melodic trap", "mood": "dark|atmospheric",
+        "instruments": "piano|pads", "energy": "0.3",
         "narrative_role": "sparse opening", "license": "owned",
-        "description": "intro, 92 BPM, A minor, sparse piano, atmospheric pads, low energy",
+        "description": "intro, 75 BPM, A minor, dark piano loop, atmospheric pads, low energy",
     },
     {
         "source_id": "track_002", "song_id": "song_001",
-        "section": "chorus", "section_type": "chorus",
+        "section": "chorus", "section_type": "hook",
         "section_index": "3", "start_time": "48.0", "end_time": "78.0",
-        "genre": "cinematic hip hop", "mood": "dark|determined|emotional",
-        "instruments": "piano|808 bass|strings|drums", "energy": "0.9",
+        "genre": "melodic trap", "mood": "dark|emotional|aggressive",
+        "instruments": "piano|808 bass|autotune vocals|trap hi-hats", "energy": "0.9",
         "narrative_role": "central emotional hook", "license": "owned",
-        "description": "chorus, 96 BPM, A minor, wide strings, heavy drums, memorable melodic hook",
+        "description": "hook, 78 BPM, A minor, heavy 808 bass, autotune vocals, trap hi-hats, high energy",
     },
     {
         "source_id": "track_003", "song_id": "song_002",
         "section": "verse", "section_type": "verse",
         "section_index": "2", "start_time": "8.0", "end_time": "48.0",
-        "genre": "cinematic hip hop", "mood": "dark|emotional",
-        "instruments": "piano|808 bass|drums", "energy": "0.6",
+        "genre": "pain music", "mood": "melancholic|reflective",
+        "instruments": "guitar loop|808 bass|snare", "energy": "0.55",
         "narrative_role": "narrative build", "license": "owned",
-        "description": "verse, 92 BPM, A minor, restrained drums, narrative mood, medium energy",
+        "description": "verse, 72 BPM, E minor, melancholic guitar loop, deep 808, restrained snare, medium energy",
     },
 ]
 

@@ -316,6 +316,17 @@ def cmd_stems(args) -> int:
     return 0
 
 
+def cmd_analyze(args) -> int:
+    from .audio.analysis import analyze
+
+    cfg = _build_config(args)
+    path = Path(args.path).resolve() if args.path else None
+    analyze(
+        cfg.project_root, cfg, which=args.dir, limit=args.limit, path=path
+    )
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .experiments import launch_ui
 
@@ -516,6 +527,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--two-stems", action="store_true", help="Vocals + accompaniment only")
     sp.add_argument("--limit", type=int, default=0)
     sp.set_defaults(func=cmd_stems)
+
+    # analyze
+    sp = sub.add_parser(
+        "analyze",
+        help="Deep audio analysis (chords, beat grid, key confidence, structure)",
+    )
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to scan (ignored with --path)")
+    sp.add_argument("--path", default=None, help="Analyze a single audio file")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_analyze)
 
     # score
     sp = sub.add_parser("score", help="Score audio-text similarity with CLAP")

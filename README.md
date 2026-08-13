@@ -23,6 +23,7 @@ then hand the heavy CUDA training to the Ubuntu workstation later.
 | `musictrain autolabel` | Suggest genre/mood/instrument tags via CLAP → `metadata/autolabels.csv` |
 | `musictrain corpus` | BPM/key/tag coverage statistics → `metadata/corpus_stats.json` |
 | `musictrain ood` | Flag off-distribution tracks (tempo/tag outliers) → `metadata/ood_tracks.json` |
+| `musictrain analyze` | Deep audio analysis: chords, beat/downbeat grid, key confidence, onset density, tempo curve, swing, structure, vocal/instrumental → `metadata/analysis.json(l)` |
 | `musictrain labels` | Scaffold `metadata/labels.csv` or validate it against the controlled vocabulary |
 | `musictrain segment` | Split into ~30 s examples, bar-aligned when BPM is known |
 | `musictrain split` | Train/val/test split **by song** (no leakage), materialize files |
@@ -118,12 +119,36 @@ musictrain ood --move         # …and move them to data/ood/
 musictrain autolabel          # CLAP-suggested genre/mood/instruments -> autolabels.csv
 musictrain similar --query track.wav --top 10   # "find tracks like this one"
 musictrain stems              # Demucs stem separation -> data/stems/
+musictrain analyze            # deep analysis: chords, beat grid, key confidence, structure
+musictrain analyze --path track.wav   # …or a single file
 ```
 
 `similar` and `autolabel` reuse the cached CLAP model and store audio embeddings
 in `metadata/audio_embeddings.json`, so repeat runs are instant. `quality`
 thresholds live under the `quality:` config section, `dedup:`/`ood:`/`autolabel:`
 tune the other sweeps.
+
+## Deep audio analysis
+
+`musictrain analyze` produces a per-track record with nine dimensions (all
+librosa-based, so no extra model downloads beyond the CLAP already used for
+prompt adherence):
+
+| Field | What it reports |
+| --- | --- |
+| `key` | Krumhansl-Schmuckler key + softmax confidence + top-3 candidates |
+| `chords` | Time-stamped chord labels (24 major/minor triads) with confidence |
+| `beat_grid` | Beat + downbeat timestamps, downbeat phase, BPM |
+| `onsets` | Onset density, mean inter-onset interval, rhythmic complexity (CV of IOI) |
+| `tempo_curve` | Tempo over time (mean/median/std + per-bin curve) |
+| `swing` | Off-beat vs on-beat energy ratio → straight/moderate/swung |
+| `structure` | Segment boundaries + coarse role labels (intro/verse/chorus/…, energy-based) |
+| `vocal` | CLAP vocal vs instrumental verdict |
+| `timbre` | CLAP audio-embedding dim/norm (reuses the embedding index) |
+
+Thresholds and behaviour live under the `analysis:` config section. Structure
+roles are heuristics (energy + position), not ground truth — treat them as a
+starting point for the manual labels.
 
 ## Experiment tracking
 

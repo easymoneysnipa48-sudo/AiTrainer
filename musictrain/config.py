@@ -121,6 +121,19 @@ class StemsCfg:
 
 
 @dataclass
+class AnalysisCfg:
+    sr: int = 32000
+    hop_length: int = 512
+    chord_frame: float = 0.5           # seconds per chord label
+    beats_per_bar: int = 4
+    structure_min_segments: int = 2
+    structure_max_segments: int = 8
+    structure_segment_seconds: float = 10.0
+    vocal_enabled: bool = True         # reuse CLAP for vocal/instrumental
+    key_top_k: int = 3                 # key candidates to report
+
+
+@dataclass
 class Config:
     project_root: Path = field(default_factory=Path.cwd)
     normalize: NormalizeCfg = field(default_factory=NormalizeCfg)
@@ -136,6 +149,7 @@ class Config:
     autolabel: AutolabelCfg = field(default_factory=AutolabelCfg)
     ood: OodCfg = field(default_factory=OodCfg)
     stems: StemsCfg = field(default_factory=StemsCfg)
+    analysis: AnalysisCfg = field(default_factory=AnalysisCfg)
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict:

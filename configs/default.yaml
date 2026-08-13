@@ -79,3 +79,13 @@ stems:
   device: auto
   two_stems: false
   segment_seconds: null
+analysis:
+  sr: 32000
+  hop_length: 512
+  chord_frame: 0.5
+  beats_per_bar: 4
+  structure_min_segments: 2
+  structure_max_segments: 8
+  structure_segment_seconds: 10.0
+  vocal_enabled: true
+  key_top_k: 3

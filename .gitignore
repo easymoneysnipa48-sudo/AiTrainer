@@ -35,6 +35,8 @@ metadata/corpus_stats.json
 metadata/autolabels.csv
 metadata/audio_embeddings.json
 metadata/stems.json
+metadata/analysis.json
+metadata/analysis.jsonl
 mlruns/
 mlruns.db
 mlflow.db

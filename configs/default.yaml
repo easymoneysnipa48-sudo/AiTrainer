@@ -46,3 +46,7 @@ mlflow:
   enabled: true
   tracking_uri: ''
   experiment_name: musicgen-style
+clap:
+  enabled: true
+  model_name: laion/clap-htsat-unfused
+  device: auto

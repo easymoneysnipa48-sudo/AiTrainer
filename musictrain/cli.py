@@ -208,7 +208,29 @@ def cmd_eval(args) -> int:
     from .evalset import run_eval
 
     cfg = _build_config(args)
-    run_eval(cfg, limit=args.limit, check_bpm=not args.no_check)
+    if args.no_clap:
+        cfg.clap.enabled = False
+    run_eval(cfg, limit=args.limit, check_bpm=not args.no_check, section=args.section)
+    return 0
+
+
+def cmd_score(args) -> int:
+    from .similarity import score
+
+    cfg = _build_config(args)
+    value = score(cfg, Path(args.path).resolve(), args.text)
+    if value is None:
+        console.error("CLAP scoring is disabled (clap.enabled=false).")
+        return 1
+    console.ok(f"CLAP similarity: {value:.4f}  <-  {args.path}")
+    return 0
+
+
+def cmd_report(args) -> int:
+    from .report import export
+
+    cfg = _build_config(args)
+    export(cfg)
     return 0
 
 
@@ -342,8 +364,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("eval", help="Run batch inference + BPM checks over the eval set")
     add_common(sp)
     sp.add_argument("--limit", type=int, default=0, help="Only run the first N prompts")
+    sp.add_argument("--section", default=None, help="Only run prompts for this section")
     sp.add_argument("--no-check", action="store_true", help="Skip BPM post-check")
+    sp.add_argument("--no-clap", action="store_true", help="Skip CLAP prompt-adherence scoring")
     sp.set_defaults(func=cmd_eval)
+
+    # report
+    sp = sub.add_parser("report", help="Export eval results to CSV + HTML")
+    add_common(sp)
+    sp.set_defaults(func=cmd_report)
+
+    # score
+    sp = sub.add_parser("score", help="Score audio-text similarity with CLAP")
+    add_common(sp)
+    sp.add_argument("--path", required=True, help="WAV file to score")
+    sp.add_argument("--text", required=True, help="Prompt text to compare against")
+    sp.set_defaults(func=cmd_score)
 
     # ui (MLflow)
     sp = sub.add_parser("ui", help="Launch the MLflow tracking UI")

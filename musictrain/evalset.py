@@ -33,10 +33,10 @@ SECTIONS = {
         "tail": "narrative mood, medium energy",
     },
     "pre-chorus": {
-        "instruments": ["strings", "riser", "trap hi-hats"],
+        "instruments": ["strings", "trap hi-hats", "snare"],
         "mood": ["tense", "determined"],
         "energy": 0.7,
-        "phrasing": "building strings, rising riser",
+        "phrasing": "building strings, driving snare, trap hi-hats",
         "tail": "building tension",
     },
     "chorus": {
@@ -62,7 +62,9 @@ SECTIONS = {
     },
 }
 
-BPMs = [70, 84, 96, 120, 140]
+# Trap tempo conventions: half-time (NBA YoungBoy / pain music) 72-80,
+# mid melodic trap 84-96, standard trap 130-140, bounce (Quavo) ~155.
+BPMs = [72, 78, 84, 96, 130, 140, 155]
 KEYS = ["A minor", "C minor", "F minor", "E minor", "D minor"]
 
 OUT_OF_DISTRIBUTION = [
@@ -150,15 +152,22 @@ def run_eval(
     limit: int = 0,
     check_bpm: bool = True,
     out_dir: Optional[Path] = None,
+    section: Optional[str] = None,
 ) -> List[dict]:
     from .evaluate import check
     from .experiments import log_eval, log_inference
     from .inference import generate, load_model
+    from .similarity import score
 
     prompts = load(cfg.project_root)
     if not prompts:
         console.error("No eval prompts found — run `musictrain evalset` first.")
         return []
+    if section:
+        prompts = [p for p in prompts if p.get("section") == section]
+        if not prompts:
+            console.error(f"No prompts for section {section!r}")
+            return []
     if limit:
         prompts = prompts[:limit]
 
@@ -192,6 +201,7 @@ def run_eval(
             "audio_path": result["path"],
             "detected_bpm": None,
             "deviation": None,
+            "clap_score": None,
             "human_rating": None,
             "status": None,
             "notes": "",
@@ -203,7 +213,15 @@ def run_eval(
             entry["status"] = report.get("status")
             entry["notes"] = report.get("note", "")
             log_eval(cfg, report)
-        log_inference(cfg, result)
+
+        clap_score = None
+        if cfg.clap.enabled:
+            try:
+                clap_score = score(cfg, Path(result["path"]), p["description"])
+                entry["clap_score"] = clap_score
+            except Exception as exc:  # noqa: BLE001 - scoring must not break eval
+                console.warn(f"CLAP scoring failed for {p['id']}: {exc}")
+        log_inference(cfg, result, clap_score=clap_score)
         results.append(entry)
 
     del model

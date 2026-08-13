@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, get_origin, get_type_hints
 
 import yaml
 
@@ -74,6 +74,13 @@ class MlflowCfg:
 
 
 @dataclass
+class ClapCfg:
+    enabled: bool = True
+    model_name: str = "laion/clap-htsat-unfused"
+    device: str = "auto"               # auto | mps | cpu | cuda
+
+
+@dataclass
 class Config:
     project_root: Path = field(default_factory=Path.cwd)
     normalize: NormalizeCfg = field(default_factory=NormalizeCfg)
@@ -83,6 +90,7 @@ class Config:
     inference: InferenceCfg = field(default_factory=InferenceCfg)
     check: CheckCfg = field(default_factory=CheckCfg)
     mlflow: MlflowCfg = field(default_factory=MlflowCfg)
+    clap: ClapCfg = field(default_factory=ClapCfg)
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict:
@@ -97,10 +105,11 @@ class Config:
         cfg = cls()
         if not data:
             return cfg
+        hints = get_type_hints(cls)
         for f in fields(cls):
             if f.name not in data or data[f.name] is None:
                 continue
-            cfg_value = _coerce(f.type, data[f.name])
+            cfg_value = _coerce(hints.get(f.name, f.type), data[f.name])
             if f.name == "project_root":
                 cfg_value = Path(cfg_value)
             setattr(cfg, f.name, cfg_value)
@@ -122,11 +131,12 @@ class Config:
 
 def _coerce(ftype: Any, value: Any) -> Any:
     """Coerce a raw dict value into the dataclass type (recursively)."""
+    origin = get_origin(ftype)
+    if origin is list:
+        return list(value) if isinstance(value, (list, tuple)) else []
     if hasattr(ftype, "__dataclass_fields__"):
         if not isinstance(value, dict):
             return ftype()
         known = {f.name for f in fields(ftype)}
         return ftype(**{k: v for k, v in value.items() if k in known})
-    if getattr(ftype, "__origin__", None) is list:
-        return list(value) if isinstance(value, (list, tuple)) else []
     return value

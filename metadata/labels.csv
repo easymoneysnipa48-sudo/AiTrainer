@@ -1,4 +1,4 @@
 source_id,song_id,section,section_type,section_index,start_time,end_time,genre,mood,instruments,energy,narrative_role,license,description
 track_001,song_001,intro,intro,1,0.0,8.0,melodic trap,dark|atmospheric,piano|pads,0.3,sparse opening,owned,"intro, 75 BPM, A minor, dark piano loop, atmospheric pads, low energy"
-track_002,song_001,chorus,hook,3,48.0,78.0,melodic trap,dark|emotional|aggressive,piano|808 bass|autotune vocals|trap hi-hats,0.9,central emotional hook,owned,"hook, 78 BPM, A minor, heavy 808 bass, autotune vocals, trap hi-hats, high energy"
-track_003,song_002,verse,verse,2,8.0,48.0,pain music,melancholic|reflective,guitar loop|808 bass|snare,0.55,narrative build,owned,"verse, 72 BPM, E minor, melancholic guitar loop, deep 808, restrained snare, medium energy"
+track_002,song_001,chorus,hook,3,48.0,78.0,melodic trap,dark|emotional|aggressive,piano|808 bass|autotune vocals|trap hi-hats|triplet flow|ad-lib shouts,0.9,central emotional hook,owned,"hook, 78 BPM, A minor, heavy 808 bass, autotune vocals, triplet flow, ad-lib shouts, trap hi-hats, high energy"
+track_003,song_002,verse,verse,2,8.0,48.0,pain music,melancholic|reflective,guitar loop|808 bass|snare|melodic flow,0.55,narrative build,owned,"verse, 72 BPM, E minor, melancholic guitar loop, deep 808, melodic flow, restrained snare, medium energy"

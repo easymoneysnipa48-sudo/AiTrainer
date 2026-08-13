@@ -185,6 +185,52 @@ def page_check() -> None:
             st.audio(report["fixed_path"])
 
 
+def page_compare() -> None:
+    st.header("📊 MLflow run comparison")
+    cfg = load_cfg()
+    from musictrain.experiments import search_runs
+
+    df = search_runs(cfg)
+    if df is None or df.empty:
+        st.warning("No MLflow runs yet — run `musictrain infer`, `eval`, or `features` first.")
+        return
+
+    tasks = sorted(x for x in df["task"].dropna().unique() if x)
+    sel_task = st.multiselect("Task", tasks, default=tasks)
+    view = df[df["task"].isin(sel_task)] if sel_task else df
+
+    models = sorted(x for x in view["model"].dropna().unique() if x)
+    if len(models) > 1:
+        sel_model = st.selectbox("Checkpoint / model", ["(all)"] + models)
+        if sel_model != "(all)":
+            view = view[view["model"] == sel_model]
+
+    st.subheader("Runs")
+    st.dataframe(view, use_container_width=True)
+
+    ev = view.dropna(subset=["target_bpm", "detected_bpm"])
+    if not ev.empty:
+        st.subheader("Detected vs target BPM")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots()
+        ax.scatter(ev["target_bpm"], ev["detected_bpm"], alpha=0.7)
+        lo = min(ev["target_bpm"].min(), ev["detected_bpm"].min())
+        hi = max(ev["target_bpm"].max(), ev["detected_bpm"].max())
+        ax.plot([lo, hi], [lo, hi], "k--", label="perfect adherence")
+        ax.set_xlabel("target BPM")
+        ax.set_ylabel("detected BPM")
+        ax.legend()
+        st.pyplot(fig)
+
+        st.subheader("BPM adherence summary")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Runs", len(ev))
+        c2.metric("In-tolerance", int((ev["verdict"] == "ok").sum()))
+        mean_dev = ev["deviation"].abs().mean() if ev["deviation"].notna().any() else 0.0
+        c3.metric("Mean |deviation|", f"{mean_dev:.2%}")
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
@@ -192,6 +238,7 @@ PAGES = {
     "✂️ Segment & Split": page_split,
     "🎛️ Generate": page_generate,
     "📏 Check BPM": page_check,
+    "📊 Compare": page_compare,
 }
 
 

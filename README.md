@@ -18,8 +18,10 @@ then hand the heavy CUDA training to the Ubuntu workstation later.
 | `musictrain split` | Train/val/test split **by song** (no leakage), materialize files |
 | `musictrain infer` | MusicGen text→audio on MPS (CPU fallback), single or batch prompts |
 | `musictrain check` | Detect BPM drift of generated audio, optional time-stretch fix |
+| `musictrain score` | Score audio-text similarity with CLAP (prompt adherence) |
 | `musictrain evalset` | Generate the fixed evaluation prompt set |
 | `musictrain eval` | Batch inference + BPM checks over the eval set (MLflow-logged) |
+| `musictrain report` | Export eval results to CSV + HTML for review |
 | `musictrain package` | SHA-256 checksums, `requirements-mac.txt`, rsync plan for Ubuntu |
 | `musictrain dashboard` | Launch the Streamlit web UI |
 | `musictrain ui` | Launch the MLflow tracking UI |
@@ -101,10 +103,14 @@ artifacts. View them with:
 musictrain ui
 ```
 
-Disable it with `mlflow.enabled: false`, or point at a remote tracking server
-via `mlflow.tracking_uri` in `configs/default.yaml`. When your workstation is
-back, use the same tracking URI so Mac prep runs and Ubuntu training runs share
-one experiment history.
+The Streamlit dashboard has a **📊 Compare** page that reads runs straight from
+MLflow — filter by task/checkpoint, scatter detected-vs-target BPM, and see
+adherence summaries.
+
+Disable tracking with `mlflow.enabled: false`, or point at a remote tracking
+server via `mlflow.tracking_uri` in `configs/default.yaml`. When your
+workstation is back, use the same tracking URI so Mac prep runs and Ubuntu
+training runs share one experiment history.
 
 ## Evaluation
 
@@ -117,10 +123,14 @@ musictrain eval --limit 5     # run a subset (or omit --limit for all 32)
 ```
 
 `eval` generates each prompt on MPS, runs the BPM post-check against the target,
-and logs params/metrics/audio to MLflow. Results land in
-`metadata/eval_results.jsonl` with fields matching your doc's eval schema
-(`checkpoint`, `seed`, `bpm_target`, `detected_bpm`, `human_rating`, …) so you
-can fill in listening scores later.
+and logs params/metrics/audio to MLflow. It also computes a **CLAP audio-text
+similarity** (`clap_score`) for automated prompt adherence — skip it with
+`--no-clap`. Score a single file with `musictrain score --path out.wav --text "..."`.
+Results land in `metadata/eval_results.jsonl` with fields matching your doc's
+eval schema (`checkpoint`, `seed`, `bpm_target`, `detected_bpm`, `clap_score`,
+`human_rating`, …) so you can fill in listening scores later. Export a
+reviewable CSV + HTML report (summary cards, per-section breakdown, clickable
+audio) with `musictrain report`.
 
 ## Notes
 

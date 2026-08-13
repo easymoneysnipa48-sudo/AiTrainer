@@ -39,7 +39,7 @@ def _configure(cfg: Config):
     return ml
 
 
-def log_inference(cfg: Config, result: dict) -> None:
+def log_inference(cfg: Config, result: dict, clap_score: Optional[float] = None) -> None:
     if not cfg.mlflow.enabled:
         return
     ml = _configure(cfg)
@@ -57,7 +57,10 @@ def log_inference(cfg: Config, result: dict) -> None:
                     "seed": result.get("seed"),
                 }
             )
-            ml.log_metrics({"duration_s": result["duration"], "sample_rate": result["sample_rate"]})
+            metrics = {"duration_s": result["duration"], "sample_rate": result["sample_rate"]}
+            if clap_score is not None:
+                metrics["clap_score"] = clap_score
+            ml.log_metrics(metrics)
             ml.log_text(result["prompt"], "prompt.txt")
             ml.log_artifact(result["path"], artifact_path="audio")
         console.info(f"MLflow: logged inference run ({Path(result['path']).name})")
@@ -119,6 +122,50 @@ def log_dataset(cfg: Config, records: List[dict]) -> None:
         console.info(f"MLflow: logged dataset run ({len(records)} tracks)")
     except Exception as exc:  # noqa: BLE001
         console.warn(f"MLflow logging failed: {exc}")
+
+
+def search_runs(cfg: Config):
+    """Return a normalized DataFrame of MLflow runs for the current experiment.
+
+    Columns: run_id, name, task (inference/eval/dataset), verdict, model,
+    device, seed, target_bpm, detected_bpm, deviation, duration_s, n_tracks,
+    bpm_mean. Empty DataFrame if there are no runs or MLflow is unavailable.
+    """
+    import pandas as pd
+
+    ml = _configure(cfg)
+    if ml is None:
+        return pd.DataFrame()
+    exp = ml.get_experiment_by_name(cfg.mlflow.experiment_name)
+    if exp is None:
+        return pd.DataFrame()
+    df = ml.search_runs(experiment_ids=[exp.experiment_id])
+    if df.empty:
+        return pd.DataFrame()
+
+    def col(name):
+        return df[name] if name in df.columns else None
+
+    out = pd.DataFrame(
+        {
+            "run_id": df["run_id"].astype(str).str[:8],
+            "name": col("tags.mlflow.runName"),
+            "task": col("tags.task"),
+            "verdict": col("tags.status"),
+            "model": col("params.model"),
+            "device": col("tags.device"),
+            "seed": col("params.seed"),
+            "target_bpm": col("metrics.target_bpm"),
+            "detected_bpm": col("metrics.detected_bpm"),
+            "deviation": col("metrics.deviation"),
+            "duration_s": col("metrics.duration_s"),
+            "n_tracks": col("metrics.n_tracks"),
+            "bpm_mean": col("metrics.bpm_mean"),
+        }
+    )
+    for c in ("target_bpm", "detected_bpm", "deviation", "duration_s", "n_tracks", "bpm_mean"):
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out
 
 
 def launch_ui(cfg: Config, port: int = 5000) -> int:

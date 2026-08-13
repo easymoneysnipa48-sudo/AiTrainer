@@ -52,11 +52,18 @@ def check(
     deviation = (detected - target_bpm) / target_bpm
     report["deviation"] = round(deviation, 4)
 
-    # Octave ambiguity: a strong percussive groove is frequently detected at
-    # double/half time. Fold by 0.5x/2x and see if that matches the target.
+    # Octave ambiguity: sparse or percussive content is frequently detected at
+    # double/half/quadruple/quarter time. Fold by those ratios and see if any
+    # matches the target (closest folds first).
     octave_note = None
     if abs(deviation) > ccfg.bpm_tolerance:
-        for factor, label in ((0.5, "double-time (0.5x octave)"), (2.0, "half-time (2x octave)")):
+        folds = (
+            (0.5, "double-time (0.5x octave)"),
+            (2.0, "half-time (2x octave)"),
+            (0.25, "quadruple-time (0.25x octave)"),
+            (4.0, "quarter-time (4x octave)"),
+        )
+        for factor, label in folds:
             folded = detected * factor
             if abs((folded - target_bpm) / target_bpm) <= ccfg.bpm_tolerance:
                 octave_note = label

@@ -13,6 +13,8 @@ checkpoints/
 outputs/
 logs/
 metadata/eval_results.jsonl
+metadata/eval_results.csv
+metadata/eval_report.html
 mlruns/
 mlruns.db
 mlflow.db

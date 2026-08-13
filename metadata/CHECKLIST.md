@@ -64,15 +64,32 @@ dark | emotional | determined | energetic | calm | melancholic | uplifting
 | somber | dreamy | atmospheric
 ```
 
-**Instruments** (combine with `|`)
+**Instruments / elements** (combine with `|`)
 
 ```
-piano | keys | guitar loop | acoustic guitar | electric guitar | 808 bass
-| sub bass | bass | 808 slides | strings | pads | synths | synth lead | drums
-| percussion | trap hi-hats | snare | clap | snare roll | brass | choir
-| vocals | autotune vocals | ad-libs | organ | flute | harp | bells
-| vinyl crackle | riser
+piano | keys | piano melody | guitar loop | acoustic guitar | electric guitar
+| 808 bass | distorted 808 | wobble 808 | sub bass | bass | 808 slides
+| strings | pads | dark pad | synths | synth lead | drums | kick | percussion
+| trap hi-hats | hi-hat rolls | open hi-hat | snare | clap | snare roll | brass
+| choir | vocals | autotune vocals | vocal chops | vocal runs | ad-libs
+| ad-lib shouts | triplet flow | double-time flow | melodic flow | organ | flute
+| harp | bells | vinyl crackle | riser
 ```
+
+Flow / ad-lib terms (`triplet flow`, `double-time flow`, `melodic flow`,
+`ad-lib shouts`, `vocal chops`) describe the rhythmic delivery and sit in the
+same slot as instruments in the prompt.
+
+**Tempo (BPM)** — trap conventions
+
+```
+half-time (NBA YoungBoy / pain music): 72-80
+mid melodic trap:                     84-96
+standard trap:                        130-140
+bounce (Quavo):                       150-155
+```
+
+The eval set spans `72 / 78 / 84 / 96 / 130 / 140 / 155`.
 
 ## Workflow
 

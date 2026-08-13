@@ -147,12 +147,49 @@ def load(root: Path) -> List[dict]:
     return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
 
 
+def _aggregate(prompt: dict, seed_records: List[dict], cfg: Config) -> dict:
+    import statistics
+
+    detected = [r["detected_bpm"] for r in seed_records if r.get("detected_bpm") is not None]
+    claps = [r["clap_score"] for r in seed_records if r.get("clap_score") is not None]
+    oks = sum(1 for r in seed_records if r.get("status") == "ok")
+    n = len(seed_records)
+
+    med_det = statistics.median(detected) if detected else None
+    target = prompt.get("bpm")
+    deviation = None
+    if med_det is not None and target:
+        deviation = round((med_det - float(target)) / float(target), 4)
+
+    return {
+        "experiment_id": cfg.mlflow.experiment_name,
+        "checkpoint": cfg.inference.model_name,
+        "prompt": prompt["description"],
+        "seed": prompt["seed"],
+        "n_seeds": n,
+        "ok_seeds": oks,
+        "section": prompt.get("section"),
+        "genre": prompt.get("genre"),
+        "key": prompt.get("key"),
+        "bpm_target": target,
+        "audio_path": seed_records[0]["audio_path"] if seed_records else None,
+        "detected_bpm": round(med_det, 2) if med_det is not None else None,
+        "deviation": deviation,
+        "clap_score": round(sum(claps) / len(claps), 4) if claps else None,
+        "human_rating": None,
+        "status": "ok" if oks >= (n + 1) // 2 else "rejected",
+        "notes": f"{oks}/{n} seeds in-tolerance" if n > 1 else "",
+        "per_seed": seed_records,
+    }
+
+
 def run_eval(
     cfg: Config,
     limit: int = 0,
     check_bpm: bool = True,
     out_dir: Optional[Path] = None,
     section: Optional[str] = None,
+    seeds: int = 1,
 ) -> List[dict]:
     from .evaluate import check
     from .experiments import log_eval, log_inference
@@ -176,53 +213,50 @@ def run_eval(
 
     processor, model, device = load_model(cfg.inference)
     results: List[dict] = []
-    console.step(f"Running eval over {len(prompts)} prompts (device={device})")
+    console.step(f"Running eval over {len(prompts)} prompts x {seeds} seed(s) (device={device})")
 
     for p in prompts:
-        result = generate(
-            cfg,
-            p["description"],
-            out_dir=out_dir,
-            name=p["id"],
-            seed=p["seed"],
-            processor=processor,
-            model=model,
-            device=device,
-        )
-        entry = {
-            "experiment_id": cfg.mlflow.experiment_name,
-            "checkpoint": cfg.inference.model_name,
-            "prompt": p["description"],
-            "seed": p["seed"],
-            "section": p.get("section"),
-            "genre": p.get("genre"),
-            "key": p.get("key"),
-            "bpm_target": p.get("bpm"),
-            "audio_path": result["path"],
-            "detected_bpm": None,
-            "deviation": None,
-            "clap_score": None,
-            "human_rating": None,
-            "status": None,
-            "notes": "",
-        }
-        if check_bpm and p.get("bpm"):
-            report = check(cfg, Path(result["path"]), target_bpm=float(p["bpm"]))
-            entry["detected_bpm"] = report.get("detected_bpm")
-            entry["deviation"] = report.get("deviation")
-            entry["status"] = report.get("status")
-            entry["notes"] = report.get("note", "")
-            log_eval(cfg, report)
+        seed_records: List[dict] = []
+        for i in range(seeds):
+            seed = p["seed"] + i
+            result = generate(
+                cfg,
+                p["description"],
+                out_dir=out_dir,
+                name=f"{p['id']}_s{seed}",
+                seed=seed,
+                processor=processor,
+                model=model,
+                device=device,
+            )
+            rec = {
+                "seed": seed,
+                "audio_path": result["path"],
+                "detected_bpm": None,
+                "deviation": None,
+                "clap_score": None,
+                "status": None,
+                "note": "",
+            }
+            if check_bpm and p.get("bpm"):
+                report = check(cfg, Path(result["path"]), target_bpm=float(p["bpm"]))
+                rec["detected_bpm"] = report.get("detected_bpm")
+                rec["deviation"] = report.get("deviation")
+                rec["status"] = report.get("status")
+                rec["note"] = report.get("note", "")
+                log_eval(cfg, report)
 
-        clap_score = None
-        if cfg.clap.enabled:
-            try:
-                clap_score = score(cfg, Path(result["path"]), p["description"])
-                entry["clap_score"] = clap_score
-            except Exception as exc:  # noqa: BLE001 - scoring must not break eval
-                console.warn(f"CLAP scoring failed for {p['id']}: {exc}")
-        log_inference(cfg, result, clap_score=clap_score)
-        results.append(entry)
+            clap_score = None
+            if cfg.clap.enabled:
+                try:
+                    clap_score = score(cfg, Path(result["path"]), p["description"])
+                    rec["clap_score"] = clap_score
+                except Exception as exc:  # noqa: BLE001 - scoring must not break eval
+                    console.warn(f"CLAP scoring failed for {p['id']} seed {seed}: {exc}")
+            log_inference(cfg, result, clap_score=clap_score)
+            seed_records.append(rec)
+
+        results.append(_aggregate(p, seed_records, cfg))
 
     del model
 
@@ -231,9 +265,9 @@ def run_eval(
         for r in results:
             w.write(r)
 
-    ok = sum(1 for r in results if r.get("status") in ("ok",))
+    ok = sum(1 for r in results if r.get("status") == "ok")
     console.ok(
-        f"Eval complete: {len(results)} runs -> {out.relative_to(cfg.project_root)} "
-        f"({ok} BPM in-tolerance)"
+        f"Eval complete: {len(results)} prompts -> {out.relative_to(cfg.project_root)} "
+        f"({ok} BPM in-tolerance by majority)"
     )
     return results

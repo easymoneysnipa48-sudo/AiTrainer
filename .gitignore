@@ -15,6 +15,16 @@ logs/
 metadata/eval_results.jsonl
 metadata/eval_results.csv
 metadata/eval_report.html
+metadata/audio_inventory.json
+metadata/manifest.json
+metadata/manifest.jsonl
+metadata/segments.json
+metadata/splits.json
+metadata/train.jsonl
+metadata/val.jsonl
+metadata/test.jsonl
+metadata/package_summary.json
+metadata/clean_audio.sha256
 mlruns/
 mlruns.db
 mlflow.db

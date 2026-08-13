@@ -14,8 +14,8 @@ from .config import Config
 
 FIELDS = [
     "experiment_id", "checkpoint", "section", "genre", "key", "bpm_target",
-    "detected_bpm", "deviation", "clap_score", "status", "seed", "prompt",
-    "audio_path", "human_rating", "notes",
+    "detected_bpm", "deviation", "clap_score", "status", "seed", "n_seeds",
+    "ok_seeds", "prompt", "audio_path", "human_rating", "notes",
 ]
 
 
@@ -92,6 +92,9 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
             audio_cell = "—"
         status = r.get("status") or "—"
         badge = "ok" if status == "ok" else "bad"
+        n_seeds = r.get("n_seeds") or 1
+        ok_seeds = r.get("ok_seeds")
+        seeds_cell = f"{ok_seeds}/{n_seeds}" if ok_seeds is not None else str(n_seeds)
         rows_html.append(
             "<tr>"
             f"<td class='prompt'>{html.escape((r.get('prompt') or '')[:70])}</td>"
@@ -103,6 +106,7 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
             f"<td>{_fmt_num(r.get('clap_score'), 3)}</td>"
             f"<td><span class='badge {badge}'>{html.escape(str(status))}</span></td>"
             f"<td>{_fmt_num(r.get('human_rating'), 0)}</td>"
+            f"<td>{seeds_cell}</td>"
             f"<td>{audio_cell}</td>"
             "</tr>"
         )
@@ -152,7 +156,7 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
 
 <h2>Results</h2>
 <table>
-<tr><th>prompt</th><th>section</th><th>key</th><th>target</th><th>detected</th><th>deviation</th><th>clap</th><th>status</th><th>rating</th><th>audio</th></tr>
+<tr><th>prompt</th><th>section</th><th>key</th><th>target</th><th>detected</th><th>deviation</th><th>clap</th><th>status</th><th>rating</th><th>seeds</th><th>audio</th></tr>
 {''.join(rows_html)}
 </table>
 </body>

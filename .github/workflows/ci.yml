@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python deps (minimal)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --no-deps
+          pip install numpy soundfile librosa pyyaml jsonlines
+
+      - name: Run smoke tests
+        run: python tests/smoke.py
+
+  eval-smoke:
+    # Heavy: downloads MusicGen (~1.5 GB) + runs a generation on CPU.
+    # Trigger manually via Actions -> CI -> Run workflow.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install torch (CPU) + full deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e .
+
+      - name: Run eval smoke (1 prompt, CPU, no CLAP)
+        run: |
+          python -m musictrain evalset --force
+          python -m musictrain eval --limit 1 --no-clap

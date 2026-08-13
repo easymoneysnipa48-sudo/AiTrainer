@@ -1,5 +1,7 @@
 # 🎵 MusicTrain
 
+[![CI](https://github.com/easymoneysnipa48-sudo/AiTrainer/actions/workflows/ci.yml/badge.svg)](https://github.com/easymoneysnipa48-sudo/AiTrainer/actions/workflows/ci.yml)
+
 A config-driven toolkit that automates the **Mac control-plane** side of your
 MusicGen fine-tuning workflow. It's the practical implementation of
 `aitraining.md`: prepare, validate, and label your dataset on the M3 Max now,
@@ -118,12 +120,15 @@ A fixed, version-controlled prompt set spanning sections, BPMs, and keys lives
 in `metadata/eval_prompts.jsonl` (plus two out-of-distribution prompts):
 
 ```bash
-musictrain evalset            # generate the set (deterministic seeds)
-musictrain eval --limit 5     # run a subset (or omit --limit for all 32)
+musictrain evalset              # generate the set (deterministic seeds)
+musictrain eval --limit 5       # run a subset (or omit --limit for all)
+musictrain eval --seeds 3       # 3 seeds per prompt → majority verdict
 ```
 
 `eval` generates each prompt on MPS, runs the BPM post-check against the target,
-and logs params/metrics/audio to MLflow. It also computes a **CLAP audio-text
+and logs params/metrics/audio to MLflow. Pass `--seeds 3` to generate each prompt
+multiple times and report a **majority verdict** (median BPM, mean CLAP) instead
+of a single noisy draw. It also computes a **CLAP audio-text
 similarity** (`clap_score`) for automated prompt adherence — skip it with
 `--no-clap`. Score a single file with `musictrain score --path out.wav --text "..."`.
 Results land in `metadata/eval_results.jsonl` with fields matching your doc's
@@ -131,6 +136,13 @@ eval schema (`checkpoint`, `seed`, `bpm_target`, `detected_bpm`, `clap_score`,
 `human_rating`, …) so you can fill in listening scores later. Export a
 reviewable CSV + HTML report (summary cards, per-section breakdown, clickable
 audio) with `musictrain report`.
+
+## CI
+
+GitHub Actions runs a fast smoke test (config, eval-set generation, label
+validation, BPM check, inventory, report export) on every push and pull request.
+A heavier `eval-smoke` job — a 1-prompt MusicGen generation on CPU — runs
+on-demand via **Actions → CI → Run workflow**.
 
 ## Notes
 

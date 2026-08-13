@@ -1,0 +1,4 @@
+source_id,song_id,section,section_type,section_index,start_time,end_time,genre,mood,instruments,energy,narrative_role,license,description
+track_001,song_001,intro,intro,1,0.0,8.0,cinematic hip hop,dark|atmospheric,piano|pads,0.4,sparse opening,owned,"intro, 92 BPM, A minor, sparse piano, atmospheric pads, low energy"
+track_002,song_001,chorus,chorus,3,48.0,78.0,cinematic hip hop,dark|determined|emotional,piano|808 bass|strings|drums,0.9,central emotional hook,owned,"chorus, 96 BPM, A minor, wide strings, heavy drums, memorable melodic hook"
+track_003,song_002,verse,verse,2,8.0,48.0,cinematic hip hop,dark|emotional,piano|808 bass|drums,0.6,narrative build,owned,"verse, 92 BPM, A minor, restrained drums, narrative mood, medium energy"

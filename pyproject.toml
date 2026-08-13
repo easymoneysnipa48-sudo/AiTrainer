@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "musictrain"
+version = "0.1.0"
+description = "MusicGen fine-tuning control-plane toolkit for Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "soundfile",
+    "librosa",
+    "pydub",
+    "tqdm",
+    "pyyaml",
+    "jsonlines",
+    "pyloudnorm",
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "streamlit",
+    "matplotlib",
+    "mlflow",
+]
+
+[project.scripts]
+musictrain = "musictrain.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["musictrain*"]

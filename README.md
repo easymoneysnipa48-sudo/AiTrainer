@@ -15,6 +15,14 @@ then hand the heavy CUDA training to the Ubuntu workstation later.
 | `musictrain normalize` | FFmpeg batch: `data/raw` → `data/clean` (mono, 32 kHz, PCM, optional loudnorm) |
 | `musictrain inventory` | Validate audio, write `metadata/audio_inventory.json` (+ SHA-256 option) |
 | `musictrain features` | Extract BPM, key, LUFS/RMS, peak, silence & clipping ratios; merge manual labels |
+| `musictrain quality` | Score audio quality (bitrate, clipping, silence, DC offset, lowpass) → `metadata/quality_report.json` |
+| `musictrain loudnorm` | Normalize loudness to a target LUFS (e.g. −14) in place |
+| `musictrain stems` | Separate stems with Demucs (vocals/drums/bass/other) → `data/stems/` |
+| `musictrain dedup` | Find exact + near-duplicate audio (pitch/tempo-robust) → `metadata/duplicates.json` |
+| `musictrain similar` | CLAP nearest-neighbour search: "find tracks like this one" |
+| `musictrain autolabel` | Suggest genre/mood/instrument tags via CLAP → `metadata/autolabels.csv` |
+| `musictrain corpus` | BPM/key/tag coverage statistics → `metadata/corpus_stats.json` |
+| `musictrain ood` | Flag off-distribution tracks (tempo/tag outliers) → `metadata/ood_tracks.json` |
 | `musictrain labels` | Scaffold `metadata/labels.csv` or validate it against the controlled vocabulary |
 | `musictrain segment` | Split into ~30 s examples, bar-aligned when BPM is known |
 | `musictrain split` | Train/val/test split **by song** (no leakage), materialize files |
@@ -94,6 +102,28 @@ musictrain labels --check    # validate vocabulary + required fields
 
 See `metadata/CHECKLIST.md` for the per-track checklist and the controlled
 vocabulary (editable in `musictrain/labels.py`).
+
+## Dataset hygiene
+
+Before training, sweep the corpus for junk and leakage:
+
+```bash
+musictrain quality            # bitrate/clipping/silence/DC/lowpass -> quality_report.json
+musictrain dedup              # exact + near-duplicate detection -> duplicates.json
+musictrain dedup --move       # …and move copies to data/dupes/
+musictrain loudnorm --target -14.0 --force   # consistent perceived loudness
+musictrain corpus             # BPM/key/tag coverage -> corpus_stats.json
+musictrain ood                # flag off-distribution tracks -> ood_tracks.json
+musictrain ood --move         # …and move them to data/ood/
+musictrain autolabel          # CLAP-suggested genre/mood/instruments -> autolabels.csv
+musictrain similar --query track.wav --top 10   # "find tracks like this one"
+musictrain stems              # Demucs stem separation -> data/stems/
+```
+
+`similar` and `autolabel` reuse the cached CLAP model and store audio embeddings
+in `metadata/audio_embeddings.json`, so repeat runs are instant. `quality`
+thresholds live under the `quality:` config section, `dedup:`/`ood:`/`autolabel:`
+tune the other sweeps.
 
 ## Experiment tracking
 

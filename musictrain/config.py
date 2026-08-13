@@ -81,6 +81,46 @@ class ClapCfg:
 
 
 @dataclass
+class QualityCfg:
+    min_bitrate_kbps: float = 128.0
+    min_sample_rate: int = 32000
+    max_clipping_ratio: float = 0.001
+    max_silence_ratio: float = 0.5
+    max_dc_offset: float = 0.01
+    min_rolloff_hz: float = 4000.0
+
+
+@dataclass
+class DedupCfg:
+    threshold: float = 0.97            # perceptual similarity threshold
+    exact_only: bool = False           # content-hash only
+    action: str = "report"             # report | move
+
+
+@dataclass
+class AutolabelCfg:
+    enabled: bool = True
+    top_k: int = 3
+    min_confidence: float = 0.15
+    device: str = "auto"               # reuse CLAP device
+
+
+@dataclass
+class OodCfg:
+    bpm_range: List[float] = field(default_factory=lambda: [70.0, 160.0])
+    action: str = "report"             # report | move
+    tag_exclude: List[str] = field(default_factory=lambda: ["ambient", "orchestral"])
+
+
+@dataclass
+class StemsCfg:
+    model: str = "htdemucs"            # htdemucs | htdemucs_ft | htdemucs_6s
+    device: str = "auto"               # auto | mps | cpu | cuda
+    two_stems: bool = False            # True -> vocals + accompaniment
+    segment_seconds: Optional[float] = None  # split long tracks before separating
+
+
+@dataclass
 class Config:
     project_root: Path = field(default_factory=Path.cwd)
     normalize: NormalizeCfg = field(default_factory=NormalizeCfg)
@@ -91,6 +131,11 @@ class Config:
     check: CheckCfg = field(default_factory=CheckCfg)
     mlflow: MlflowCfg = field(default_factory=MlflowCfg)
     clap: ClapCfg = field(default_factory=ClapCfg)
+    quality: QualityCfg = field(default_factory=QualityCfg)
+    dedup: DedupCfg = field(default_factory=DedupCfg)
+    autolabel: AutolabelCfg = field(default_factory=AutolabelCfg)
+    ood: OodCfg = field(default_factory=OodCfg)
+    stems: StemsCfg = field(default_factory=StemsCfg)
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict:

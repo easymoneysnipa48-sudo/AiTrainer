@@ -9,6 +9,9 @@ data/segments/
 data/train/
 data/val/
 data/test/
+data/dupes/
+data/ood/
+data/stems/
 checkpoints/
 outputs/
 logs/
@@ -25,6 +28,13 @@ metadata/val.jsonl
 metadata/test.jsonl
 metadata/package_summary.json
 metadata/clean_audio.sha256
+metadata/quality_report.json
+metadata/duplicates.json
+metadata/ood_tracks.json
+metadata/corpus_stats.json
+metadata/autolabels.csv
+metadata/audio_embeddings.json
+metadata/stems.json
 mlruns/
 mlruns.db
 mlflow.db

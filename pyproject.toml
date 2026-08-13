@@ -28,6 +28,9 @@ dependencies = [
     "mlflow",
 ]
 
+[project.optional-dependencies]
+stems = ["demucs"]
+
 [project.scripts]
 musictrain = "musictrain.cli:main"
 

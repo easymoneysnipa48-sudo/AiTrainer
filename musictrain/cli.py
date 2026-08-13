@@ -234,6 +234,88 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_quality(args) -> int:
+    from .audio.quality import quality
+
+    cfg = _build_config(args)
+    quality(cfg.project_root, cfg, which=args.dir, limit=args.limit)
+    return 0
+
+
+def cmd_loudnorm(args) -> int:
+    from .loudnorm import loudnorm
+
+    cfg = _build_config(args)
+    loudnorm(
+        cfg.project_root, cfg, which=args.dir,
+        target_lufs=args.target, force=args.force, dry_run=args.dry_run,
+    )
+    return 0
+
+
+def cmd_dedup(args) -> int:
+    from .dedup import find_duplicates
+
+    cfg = _build_config(args)
+    if args.move:
+        cfg.dedup.action = "move"
+    find_duplicates(cfg.project_root, cfg, which=args.dir)
+    return 0
+
+
+def cmd_similar(args) -> int:
+    from .embeddings import nearest
+
+    cfg = _build_config(args)
+    hits = nearest(
+        cfg.project_root, cfg, Path(args.query).resolve(), which=args.dir, top_k=args.top
+    )
+    if not hits:
+        console.error("No embeddings available — check data/<dir> or run `musictrain similar` again.")
+        return 1
+    for rel, sim in hits:
+        console.ok(f"{sim:.4f}  {rel}")
+    return 0
+
+
+def cmd_autolabel(args) -> int:
+    from .autolabel import autolabel
+
+    cfg = _build_config(args)
+    autolabel(cfg.project_root, cfg, which=args.dir, limit=args.limit)
+    return 0
+
+
+def cmd_corpus(args) -> int:
+    from .corpus import corpus
+
+    cfg = _build_config(args)
+    corpus(cfg.project_root, cfg, which=args.dir)
+    return 0
+
+
+def cmd_ood(args) -> int:
+    from .ood import curate_ood
+
+    cfg = _build_config(args)
+    if args.move:
+        cfg.ood.action = "move"
+    curate_ood(cfg.project_root, cfg, which=args.dir)
+    return 0
+
+
+def cmd_stems(args) -> int:
+    from .stems import separate_stems
+
+    cfg = _build_config(args)
+    if args.model:
+        cfg.stems.model = args.model
+    if args.two_stems:
+        cfg.stems.two_stems = True
+    separate_stems(cfg.project_root, cfg, which=args.dir, limit=args.limit)
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .experiments import launch_ui
 
@@ -374,6 +456,66 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("report", help="Export eval results to CSV + HTML")
     add_common(sp)
     sp.set_defaults(func=cmd_report)
+
+    # quality
+    sp = sub.add_parser("quality", help="Score audio quality (bitrate/clipping/silence)")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to score")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_quality)
+
+    # loudnorm
+    sp = sub.add_parser("loudnorm", help="Normalize loudness to a target LUFS")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to normalize")
+    sp.add_argument("--target", type=float, default=-14.0, help="Target integrated LUFS")
+    sp.add_argument("--force", action="store_true", help="Overwrite files in place")
+    sp.add_argument("--dry-run", action="store_true", help="Print actions without writing")
+    sp.set_defaults(func=cmd_loudnorm)
+
+    # dedup
+    sp = sub.add_parser("dedup", help="Find exact + near-duplicate audio")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to scan")
+    sp.add_argument("--move", action="store_true", help="Move non-canonical copies to data/dupes/")
+    sp.set_defaults(func=cmd_dedup)
+
+    # similar
+    sp = sub.add_parser("similar", help="Find tracks similar to a query file")
+    add_common(sp)
+    sp.add_argument("--query", required=True, help="Query audio file")
+    sp.add_argument("--dir", default="clean", help="data/<dir> to search")
+    sp.add_argument("--top", type=int, default=10, help="Number of results")
+    sp.set_defaults(func=cmd_similar)
+
+    # autolabel
+    sp = sub.add_parser("autolabel", help="Suggest genre/mood/instrument tags via CLAP")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to label")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_autolabel)
+
+    # corpus
+    sp = sub.add_parser("corpus", help="Report BPM/key/tag coverage statistics")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> (for messaging)")
+    sp.set_defaults(func=cmd_corpus)
+
+    # ood
+    sp = sub.add_parser("ood", help="Flag off-distribution tracks")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> (for messaging)")
+    sp.add_argument("--move", action="store_true", help="Move flagged tracks to data/ood/")
+    sp.set_defaults(func=cmd_ood)
+
+    # stems
+    sp = sub.add_parser("stems", help="Separate stems with Demucs (vocals/drums/bass/other)")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to separate")
+    sp.add_argument("--model", default=None, help="htdemucs | htdemucs_ft | htdemucs_6s")
+    sp.add_argument("--two-stems", action="store_true", help="Vocals + accompaniment only")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_stems)
 
     # score
     sp = sub.add_parser("score", help="Score audio-text similarity with CLAP")

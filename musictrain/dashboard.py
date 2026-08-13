@@ -185,10 +185,63 @@ def page_check() -> None:
             st.audio(report["fixed_path"])
 
 
+def _stable_verdicts(cfg: Config) -> None:
+    """Majority-vote verdicts from metadata/eval_results.jsonl (seeded runs)."""
+    from musictrain.report import load_results
+
+    rows = load_results(ROOT)
+    if not rows:
+        st.info("No eval results yet — run `musictrain eval` (ideally `--seeds 3`).")
+        return
+
+    df = pd.DataFrame(rows)
+    n = len(df)
+    ok = int((df["status"] == "ok").sum()) if "status" in df else 0
+    pct = ok / n if n else 0.0
+
+    n_seeds = (
+        df["n_seeds"].fillna(1).astype(int)
+        if "n_seeds" in df
+        else pd.Series([1] * n, index=df.index)
+    )
+    seeded = int((n_seeds > 1).sum())
+
+    devs = df["deviation"].dropna().abs() if "deviation" in df else pd.Series(dtype=float)
+    mean_dev = float(devs.mean()) if len(devs) else 0.0
+    claps = df["clap_score"].dropna() if "clap_score" in df else pd.Series(dtype=float)
+    mean_clap = float(claps.mean()) if len(claps) else 0.0
+
+    st.subheader("🧪 Stable verdicts (majority vote)")
+    st.caption(
+        "Aggregated over repeated seeds — the reliable baseline. The MLflow "
+        "table/scatter below shows raw per-seed runs."
+    )
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Prompts", n)
+    c2.metric("In-tolerance", f"{ok} ({pct:.0%})")
+    c3.metric("Mean |deviation|", f"{mean_dev:.2%}")
+    c4.metric("Mean CLAP", f"{mean_clap:.3f}")
+    c5.metric("Multi-seed prompts", f"{seeded}/{n}")
+
+    if "section" in df:
+        by = (
+            df.groupby("section")["status"]
+            .agg(total="count", ok=lambda s: int((s == "ok").sum()))
+            .reset_index()
+        )
+        by["in-tolerance"] = by.apply(lambda r: f"{r['ok']}/{r['total']}", axis=1)
+        st.dataframe(
+            by[["section", "in-tolerance"]], use_container_width=True, hide_index=True
+        )
+
+
 def page_compare() -> None:
     st.header("📊 MLflow run comparison")
     cfg = load_cfg()
     from musictrain.experiments import search_runs
+
+    _stable_verdicts(cfg)
+    st.markdown("---")
 
     df = search_runs(cfg)
     if df is None or df.empty:
@@ -231,6 +284,144 @@ def page_compare() -> None:
         c3.metric("Mean |deviation|", f"{mean_dev:.2%}")
 
 
+def _read_json(rel: str):
+    p = ROOT / "metadata" / rel
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def page_hygiene() -> None:
+    st.header("🧹 Dataset hygiene")
+    st.caption(
+        "Surfaces quality, dedup, corpus, and OOD results. Run the sweeps below "
+        "or via the CLI (`musictrain quality|dedup|corpus|ood`)."
+    )
+
+    quality = _read_json("quality_report.json")
+    dedup = _read_json("duplicates.json")
+    corpus = _read_json("corpus_stats.json")
+    ood = _read_json("ood_tracks.json")
+
+    # -- summary cards -------------------------------------------------------
+    q_flagged = (
+        sum(1 for r in quality if r.get("grade") in ("C", "F")) if quality else 0
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "Quality flagged (C/F)",
+        f"{q_flagged}" if quality else "—",
+        delta=None if not quality else f"{len(quality) - q_flagged} A/B",
+    )
+    c2.metric(
+        "Duplicate groups",
+        f"{dedup['duplicate_groups']}" if dedup else "—",
+        f"{dedup['duplicate_files']} files" if dedup else None,
+    )
+    c3.metric("Corpus tracks", f"{corpus['n_tracks']}" if corpus else "—")
+    c4.metric("OOD flagged", f"{len(ood)}" if ood is not None else "—")
+
+    # -- run buttons ---------------------------------------------------------
+    cfg = load_cfg()
+    b1, b2, b3, b4 = st.columns(4)
+    if b1.button("Run quality", use_container_width=True):
+        from musictrain.audio.quality import quality as run_q
+
+        with st.spinner("Scoring quality…"):
+            run_q(ROOT, cfg)
+        st.rerun()
+    if b2.button("Run dedup", use_container_width=True):
+        from musictrain.dedup import find_duplicates
+
+        with st.spinner("Finding duplicates…"):
+            find_duplicates(ROOT, cfg)
+        st.rerun()
+    if b3.button("Run corpus", use_container_width=True):
+        from musictrain.corpus import corpus as run_c
+
+        with st.spinner("Computing corpus stats…"):
+            run_c(ROOT, cfg)
+        st.rerun()
+    if b4.button("Run OOD", use_container_width=True):
+        from musictrain.ood import curate_ood
+
+        with st.spinner("Flagging OOD tracks…"):
+            curate_ood(ROOT, cfg)
+        st.rerun()
+
+    st.markdown("---")
+
+    # -- quality -------------------------------------------------------------
+    st.subheader("🔊 Audio quality")
+    if not quality:
+        st.info("No quality report yet — run `musictrain quality`.")
+    else:
+        qdf = pd.DataFrame(quality)
+        if "grade" in qdf:
+            st.bar_chart(qdf["grade"].value_counts().reindex(["A", "B", "C", "F"], fill_value=0))
+        show = qdf[~qdf["flags"].apply(lambda f: not f)] if "flags" in qdf else qdf
+        st.dataframe(show, use_container_width=True, hide_index=True)
+
+    # -- dedup ---------------------------------------------------------------
+    st.subheader("👯 Duplicates")
+    if not dedup:
+        st.info("No duplicate report yet — run `musictrain dedup`.")
+    else:
+        st.caption(
+            f"Scanned {dedup.get('scanned')} files · "
+            f"{dedup.get('duplicate_files')} dupes in {dedup.get('duplicate_groups')} groups"
+        )
+        groups = dedup.get("groups", [])
+        if groups:
+            rows = [
+                {
+                    "kind": g["kind"],
+                    "canonical": g["canonical"],
+                    "dupes": len(g["members"]) - 1,
+                    "members": " · ".join(g["members"]),
+                }
+                for g in groups
+            ]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.success("No duplicates found.")
+
+    # -- corpus ---------------------------------------------------------------
+    st.subheader("📈 Corpus coverage")
+    if not corpus:
+        st.info("No corpus stats yet — run `musictrain features` then `musictrain corpus`.")
+    else:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Tracks", corpus.get("n_tracks", 0))
+        c2.metric(
+            "Total duration",
+            f"{corpus.get('total_duration_s', 0):,.0f}s",
+        )
+        bpm = corpus.get("bpm") or {}
+        c3.metric("BPM", bpm.get("mean") if bpm.get("mean") is not None else "—")
+
+        hist = bpm.get("histogram") or {}
+        if hist:
+            st.caption("BPM histogram")
+            st.bar_chart(pd.Series(hist))
+
+        for dim in ("key", "genre", "mood", "instruments", "sections"):
+            counts = corpus.get(dim) or {}
+            if counts:
+                top = dict(sorted(counts.items(), key=lambda kv: -kv[1])[:12])
+                st.caption(f"{dim.capitalize()} (top 12)")
+                st.bar_chart(pd.Series(top))
+
+    # -- OOD -----------------------------------------------------------------
+    st.subheader("🚫 Off-distribution")
+    if ood is None:
+        st.info("No OOD report yet — run `musictrain ood`.")
+    elif not ood:
+        st.success("No OOD tracks flagged.")
+    else:
+        odf = pd.DataFrame(ood)
+        cols = [c for c in ("path", "bpm", "key", "genre", "mood", "ood_reasons") if c in odf]
+        st.dataframe(odf[cols], use_container_width=True, hide_index=True)
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
@@ -239,6 +430,7 @@ PAGES = {
     "🎛️ Generate": page_generate,
     "📏 Check BPM": page_check,
     "📊 Compare": page_compare,
+    "🧹 Hygiene": page_hygiene,
 }
 
 

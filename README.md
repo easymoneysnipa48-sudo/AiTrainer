@@ -1,6 +1,7 @@
 # 🎵 MusicTrain
 
 [![CI](https://github.com/easymoneysnipa48-sudo/AiTrainer/actions/workflows/ci.yml/badge.svg)](https://github.com/easymoneysnipa48-sudo/AiTrainer/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/easymoneysnipa48-sudo/AiTrainer/blob/main/LICENSE)
 
 A config-driven toolkit that automates the **Mac control-plane** side of your
 MusicGen fine-tuning workflow. It's the practical implementation of
@@ -162,7 +163,14 @@ musictrain ui
 
 The Streamlit dashboard has a **📊 Compare** page that reads runs straight from
 MLflow — filter by task/checkpoint, scatter detected-vs-target BPM, and see
-adherence summaries.
+adherence summaries. It also shows a **🧪 Stable verdicts** summary (majority
+vote over repeated seeds) read from `metadata/eval_results.jsonl`: per-section
+in-tolerance counts, mean |deviation|, and mean CLAP — the reliable baseline to
+diff against future checkpoints, distinct from the raw per-seed MLflow runs.
+
+A **🧹 Hygiene** page surfaces the four dataset sweeps — audio-quality scores
+and grades, duplicate groups, BPM/key/tag corpus coverage, and OOD flags — with
+one-click buttons to re-run each sweep from the UI.
 
 Disable tracking with `mlflow.enabled: false`, or point at a remote tracking
 server via `mlflow.tracking_uri` in `configs/default.yaml`. When your
@@ -178,6 +186,8 @@ in `metadata/eval_prompts.jsonl` (plus two out-of-distribution prompts):
 musictrain evalset              # generate the set (deterministic seeds)
 musictrain eval --limit 5       # run a subset (or omit --limit for all)
 musictrain eval --seeds 3       # 3 seeds per prompt → majority verdict
+musictrain eval --section chorus           # single section
+musictrain eval --section "chorus,outro"   # multiple sections
 ```
 
 `eval` generates each prompt on MPS, runs the BPM post-check against the target,

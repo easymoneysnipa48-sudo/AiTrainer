@@ -457,7 +457,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("eval", help="Run batch inference + BPM checks over the eval set")
     add_common(sp)
     sp.add_argument("--limit", type=int, default=0, help="Only run the first N prompts")
-    sp.add_argument("--section", default=None, help="Only run prompts for this section")
+    sp.add_argument("--section", default=None, help="Only run prompts for this section (comma-separated for multiple)")
     sp.add_argument("--seeds", type=int, default=1, help="Seeds per prompt (e.g. 3) for majority verdicts")
     sp.add_argument("--no-check", action="store_true", help="Skip BPM post-check")
     sp.add_argument("--no-clap", action="store_true", help="Skip CLAP prompt-adherence scoring")

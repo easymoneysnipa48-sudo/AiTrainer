@@ -201,9 +201,10 @@ def run_eval(
         console.error("No eval prompts found — run `musictrain evalset` first.")
         return []
     if section:
-        prompts = [p for p in prompts if p.get("section") == section]
+        wanted = {s.strip() for s in section.split(",") if s.strip()}
+        prompts = [p for p in prompts if p.get("section") in wanted]
         if not prompts:
-            console.error(f"No prompts for section {section!r}")
+            console.error(f"No prompts for section(s) {section!r}")
             return []
     if limit:
         prompts = prompts[:limit]

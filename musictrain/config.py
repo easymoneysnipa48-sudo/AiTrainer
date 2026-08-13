@@ -26,6 +26,9 @@ class SegmentCfg:
     bar_aligned: bool = True
     beats_per_bar: int = 4
     min_segment_seconds: float = 8.0
+    downbeat_aligned: bool = False   # cut on detected downbeats (#21)
+    overlap_seconds: float = 0.0     # overlap between consecutive segments (#24)
+    fade_seconds: float = 0.0        # fade in/out at cut boundaries (#25)
 
 
 @dataclass
@@ -43,6 +46,8 @@ class SplitCfg:
     test: float = 0.1
     seed: int = 42
     mode: str = "copy"  # "copy" | "link"
+    stratify: str = ""   # "" | "key" | "bpm" | "genre" | "mood" (#23)
+    k_folds: int = 0     # 0 = train/val/test; N = N-fold CV (#22)
 
 
 @dataclass
@@ -134,6 +139,14 @@ class AnalysisCfg:
 
 
 @dataclass
+class ExportCfg:
+    format: str = "arrow"      # arrow | jsonl | csv (#26)
+    which: str = "all"         # train | val | test | all
+    audio_column: bool = True  # include an audio column (HF Audio feature)
+    max_shard_size: str = "500MB"
+
+
+@dataclass
 class Config:
     project_root: Path = field(default_factory=Path.cwd)
     normalize: NormalizeCfg = field(default_factory=NormalizeCfg)
@@ -150,6 +163,7 @@ class Config:
     ood: OodCfg = field(default_factory=OodCfg)
     stems: StemsCfg = field(default_factory=StemsCfg)
     analysis: AnalysisCfg = field(default_factory=AnalysisCfg)
+    export: ExportCfg = field(default_factory=ExportCfg)
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict:

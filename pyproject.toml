@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 stems = ["demucs"]
+export = ["datasets"]
 
 [project.scripts]
 musictrain = "musictrain.cli:main"

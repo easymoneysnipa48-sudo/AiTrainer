@@ -26,8 +26,9 @@ then hand the heavy CUDA training to the Ubuntu workstation later.
 | `musictrain ood` | Flag off-distribution tracks (tempo/tag outliers) → `metadata/ood_tracks.json` |
 | `musictrain analyze` | Deep audio analysis: chords, beat/downbeat grid, key confidence, onset density, tempo curve, swing, structure, vocal/instrumental → `metadata/analysis.json(l)` |
 | `musictrain labels` | Scaffold `metadata/labels.csv` or validate it against the controlled vocabulary |
-| `musictrain segment` | Split into ~30 s examples, bar-aligned when BPM is known |
-| `musictrain split` | Train/val/test split **by song** (no leakage), materialize files |
+| `musictrain segment` | Split into ~30 s examples — bar-aligned, or downbeat-aligned with overlap/fades (`--downbeat --overlap --fade`) |
+| `musictrain split` | Train/val/test split **by song** (no leakage), stratified (`--stratify`) or k-fold (`--k-folds`) |
+| `musictrain export` | Export the split corpus to HF `datasets` (arrow/jsonl/csv) → `data/dataset/` |
 | `musictrain infer` | MusicGen text→audio on MPS (CPU fallback), single or batch prompts |
 | `musictrain check` | Detect BPM drift of generated audio, optional time-stretch fix |
 | `musictrain score` | Score audio-text similarity with CLAP (prompt adherence) |
@@ -150,6 +151,25 @@ prompt adherence):
 Thresholds and behaviour live under the `analysis:` config section. Structure
 roles are heuristics (energy + position), not ground truth — treat them as a
 starting point for the manual labels.
+
+## Segmentation & splits
+
+```bash
+musictrain segment --downbeat            # cut on detected downbeats (#21)
+musictrain segment --overlap 2.0         # 2 s overlap between consecutive segments (#24)
+musictrain segment --fade 0.05           # fade in/out to de-click boundaries (#25)
+musictrain split --stratify genre        # balanced key/bpm/genre/mood per split (#23)
+musictrain split --k-folds 5             # 5-fold CV -> metadata/folds.json (#22)
+musictrain export --format arrow         # HF datasets DatasetDict -> data/dataset/ (#26)
+musictrain export --format jsonl --which val
+```
+
+`split` groups by song (no train/val leakage). `--stratify` splits each
+attribute bucket proportionally so rare genres/keys don't collapse into one
+fold; `--k-folds` writes rotating train/val folds instead of a single split.
+`export` joins each segment with its feature manifest and emits an Arrow
+DatasetDict (Audio column) or flat JSONL/CSV. Install the optional dep with
+`uv pip install -e '.[export]'`.
 
 ## Experiment tracking
 

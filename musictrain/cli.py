@@ -94,6 +94,12 @@ def cmd_segment(args) -> int:
     from .audio.segment import segment
 
     cfg = _build_config(args)
+    if args.downbeat:
+        cfg.segment.downbeat_aligned = True
+    if args.overlap is not None:
+        cfg.segment.overlap_seconds = args.overlap
+    if args.fade is not None:
+        cfg.segment.fade_seconds = args.fade
     segment(cfg.project_root, cfg, force=args.force, dry_run=args.dry_run)
     return 0
 
@@ -102,7 +108,19 @@ def cmd_split(args) -> int:
     from .split import split
 
     cfg = _build_config(args)
+    if args.stratify is not None:
+        cfg.split.stratify = args.stratify
+    if args.k_folds is not None:
+        cfg.split.k_folds = args.k_folds
     split(cfg.project_root, cfg, dry_run=args.dry_run)
+    return 0
+
+
+def cmd_export(args) -> int:
+    from .export import export
+
+    cfg = _build_config(args)
+    export(cfg.project_root, cfg, which=args.which or "", format_=args.format or "")
     return 0
 
 
@@ -401,13 +419,25 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.add_argument("--force", action="store_true")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--downbeat", action="store_true", help="Cut on detected downbeats (#21)")
+    sp.add_argument("--overlap", type=float, default=None, help="Overlap seconds between segments (#24)")
+    sp.add_argument("--fade", type=float, default=None, help="Fade in/out seconds at cut boundaries (#25)")
     sp.set_defaults(func=cmd_segment)
 
     # split
     sp = sub.add_parser("split", help="Train/val/test split by song")
     add_common(sp)
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--stratify", default=None, help="Stratify by key|bpm|genre|mood (#23)")
+    sp.add_argument("--k-folds", type=int, default=None, help="N-fold cross-validation instead of train/val/test (#22)")
     sp.set_defaults(func=cmd_split)
+
+    # export
+    sp = sub.add_parser("export", help="Export split corpus to HF datasets (arrow/jsonl/csv) (#26)")
+    add_common(sp)
+    sp.add_argument("--which", default="", choices=["train", "val", "test", "all"], help="Split to export (default: cfg)")
+    sp.add_argument("--format", default="", choices=["arrow", "jsonl", "csv"], help="Output format (default: cfg)")
+    sp.set_defaults(func=cmd_export)
 
     # infer
     sp = sub.add_parser("infer", help="Generate audio with MusicGen on MPS")

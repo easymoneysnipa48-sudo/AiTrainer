@@ -1,10 +1,17 @@
-"""Segment normalized audio into fixed-length examples with optional bar alignment."""
+"""Segment normalized audio into fixed-length examples.
+
+Two modes:
+  * fast    — ffmpeg `-f segment` at a bar-rounded length (the default)
+  * precise — explicit (start, end) windows when any of downbeat-alignment
+              (#21), overlap (#24), or fades (#25) is requested, so cuts land
+              on detected downbeats and boundaries are de-clicked.
+"""
 from __future__ import annotations
 
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .. import console
 from ..config import Config
@@ -45,6 +52,77 @@ def _load_bpm_map(root: Path) -> Dict[str, Optional[float]]:
     return out
 
 
+def detect_downbeats(y, sr: int, beats_per_bar: int = 4) -> List[float]:
+    """Return downbeat timestamps (seconds) via librosa beat tracking."""
+    import librosa
+
+    from .analysis import beat_grid
+
+    return beat_grid(y, sr, hop_length=512, beats_per_bar=beats_per_bar)["downbeat_times"]
+
+
+def compute_windows(
+    duration: float,
+    length: float,
+    overlap: float,
+    min_seconds: float,
+) -> List[Tuple[float, float]]:
+    """Fixed-stride windows with optional overlap (#24)."""
+    if overlap >= length:
+        overlap = max(0.0, length - min_seconds)
+    stride = length - overlap
+    if stride <= 0:
+        stride = length
+    windows: List[Tuple[float, float]] = []
+    start = 0.0
+    while start < duration:
+        end = min(start + length, duration)
+        if end - start >= min_seconds:
+            windows.append((round(start, 4), round(end, 4)))
+        if end >= duration:
+            break
+        start += stride
+    return windows
+
+
+def downbeat_windows(
+    downbeats: List[float],
+    bars_per_seg: int,
+    duration: float,
+) -> List[Tuple[float, float]]:
+    """Windows aligned to detected downbeats (#21)."""
+    if not downbeats:
+        return []
+    step = max(1, bars_per_seg)
+    windows: List[Tuple[float, float]] = []
+    for i in range(0, len(downbeats) - 1, step):
+        start = downbeats[i]
+        end = downbeats[i + step] if i + step < len(downbeats) else duration
+        windows.append((round(start, 4), round(end, 4)))
+    return windows
+
+
+def _slice_args(src: Path, dst: Path, start: float, end: float, cfg: Config, fade: float) -> List[str]:
+    dur = end - start
+    args = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        "-ss", f"{start:.4f}",
+        "-t", f"{dur:.4f}",
+        "-ac", str(cfg.normalize.channels),
+        "-ar", str(cfg.normalize.sample_rate),
+        "-c:a", cfg.normalize.codec,
+    ]
+    if fade and fade > 0 and dur > 2 * fade:
+        f = min(fade, dur / 2.0)
+        args += [
+            "-af",
+            f"afade=t=in:st=0:d={f:.4f},afade=t=out:st={dur - f:.4f}:d={f:.4f}",
+        ]
+    args.append(str(dst))
+    return args
+
+
 def segment(root: Path, cfg: Config, force: bool = False, dry_run: bool = False) -> List[dict]:
     scfg = cfg.segment
     clean_dir = root / "data" / "clean"
@@ -56,6 +134,8 @@ def segment(root: Path, cfg: Config, force: bool = False, dry_run: bool = False)
     if not files:
         console.warn(f"No WAV files under {clean_dir}")
         return []
+
+    precise = scfg.downbeat_aligned or scfg.overlap_seconds > 0 or scfg.fade_seconds > 0
 
     manifest: List[dict] = []
     console.step(f"Segmenting {len(files)} files -> data/segments")
@@ -77,6 +157,56 @@ def segment(root: Path, cfg: Config, force: bool = False, dry_run: bool = False)
             console.info(f"[dry-run] {src.name} -> {song_id}_seg%03d.wav @ {length:.2f}s")
             continue
 
+        # ---- precise mode (downbeat / overlap / fade) ---------------------
+        if precise:
+            import soundfile as sf
+
+            from .features import load_audio
+
+            info = sf.info(src)
+            duration = float(info.duration)
+
+            windows: List[Tuple[float, float]]
+            if scfg.downbeat_aligned:
+                y, sr = load_audio(src, sr=32000)
+                dbs = detect_downbeats(y, sr, scfg.beats_per_bar)
+                if dbs:
+                    bar = _bar_seconds(bpm, scfg.beats_per_bar) if bpm else length / scfg.beats_per_bar
+                    bars_per_seg = max(1, int(round(length / bar))) if bar > 0 else 1
+                    windows = downbeat_windows(dbs, bars_per_seg, duration)
+                    if not windows:
+                        windows = compute_windows(duration, length, scfg.overlap_seconds, scfg.min_segment_seconds)
+                else:
+                    windows = compute_windows(duration, length, scfg.overlap_seconds, scfg.min_segment_seconds)
+            else:
+                windows = compute_windows(duration, length, scfg.overlap_seconds, scfg.min_segment_seconds)
+
+            kept = 0
+            for i, (start, end) in enumerate(windows):
+                dst = seg_dir / f"{song_id}_seg{i:03d}.wav"
+                args = _slice_args(src, dst, start, end, cfg, scfg.fade_seconds)
+                res = subprocess.run(args, capture_output=True, text=True)
+                if res.returncode != 0:
+                    console.error(f"Slice failed for {src.name} [{start:.2f}-{end:.2f}]: {res.stderr.strip()[:300]}")
+                    continue
+                manifest.append(
+                    {
+                        "path": str(dst.relative_to(root)),
+                        "song_id": song_id,
+                        "source": str(src.relative_to(root)),
+                        "segment_index": i,
+                        "start_time": start,
+                        "end_time": end,
+                        "segment_seconds": round(end - start, 3),
+                        "overlap_seconds": scfg.overlap_seconds,
+                        "fade_seconds": scfg.fade_seconds,
+                    }
+                )
+                kept += 1
+            console.ok(f"{song_id}: {kept} segments (precise)")
+            continue
+
+        # ---- fast mode (ffmpeg -f segment) --------------------------------
         args = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(src),

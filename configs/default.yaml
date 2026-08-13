@@ -16,6 +16,9 @@ segment:
   bar_aligned: true
   beats_per_bar: 4
   min_segment_seconds: 8.0
+  downbeat_aligned: false
+  overlap_seconds: 0.0
+  fade_seconds: 0.0
 features:
   sr: 32000
   hop_length: 512
@@ -27,6 +30,8 @@ split:
   test: 0.1
   seed: 42
   mode: copy
+  stratify: ''
+  k_folds: 0
 inference:
   model_name: facebook/musicgen-small
   device: mps
@@ -89,3 +94,8 @@ analysis:
   structure_segment_seconds: 10.0
   vocal_enabled: true
   key_top_k: 3
+export:
+  format: arrow
+  which: all
+  audio_column: true
+  max_shard_size: 500MB

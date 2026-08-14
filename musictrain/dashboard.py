@@ -1,16 +1,17 @@
 """Streamlit dashboard for the musictrain toolkit.
 
-A live, tidy control surface: every page gets loading skeletons, widget keys,
-and animated progress bars for long-running jobs, plus auto-refreshing
-"live" fragments on the data pages.
+A live, tidy control surface: loading skeletons, widget keys, animated
+progress bars, dark/light themes, command palette + keyboard shortcuts,
+breadcrumb history, global search, and auto-refreshing fragments.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 import pandas as pd
 import streamlit as st
@@ -21,105 +22,323 @@ st.set_page_config(page_title="MusicTrain", page_icon="🎵", layout="wide")
 
 ROOT = Path.cwd()
 
-_THEME = """
+
+# --------------------------------------------------------------------------- #
+# Theme (dark / light) — feature 1
+# --------------------------------------------------------------------------- #
+_DARK_CSS = """
 <style>
-  /* ---------- global ---------- */
   .stApp { background: linear-gradient(160deg, #0f1220 0%, #141a2e 55%, #0e1120 100%); }
   .stApp, [data-testid="stHeader"] { background: transparent; }
-  html, body, [class*="css"], .stMarkdown, .stText, p, span, label {
-    color: #e6e9f2;
-  }
-  [data-testid="stSidebar"] {
-    background: rgba(20, 24, 40, 0.92);
-    border-right: 1px solid rgba(255,255,255,0.06);
-  }
+  html, body, [class*="css"], .stMarkdown, .stText, p, span, label { color: #e6e9f2; }
+  [data-testid="stSidebar"] { background: rgba(20, 24, 40, 0.92); border-right: 1px solid rgba(255,255,255,0.06); }
   [data-testid="stSidebar"] * { color: #dfe3ee; }
   h1, h2, h3 { color: #f2f4fb !important; letter-spacing: -0.01em; }
-
-  /* ---------- metric cards ---------- */
-  [data-testid="stMetric"] {
-    background: rgba(255,255,255,0.045);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 14px;
-    padding: 14px 16px;
-    backdrop-filter: blur(6px);
-    box-shadow: 0 2px 10px rgba(0,0,0,0.18);
-  }
+  [data-testid="stMetric"] { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px; padding: 14px 16px; backdrop-filter: blur(6px); box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
   [data-testid="stMetricLabel"] { color: #9aa3c0; }
   [data-testid="stMetricValue"] { color: #eef1fb; }
   [data-testid="stMetricDelta"] { color: #7ee2a8; }
-
-  /* ---------- buttons ---------- */
-  .stButton > button, .stDownloadButton > button {
-    border-radius: 10px;
-    border: 1px solid rgba(255,255,255,0.12);
-    background: rgba(255,255,255,0.06);
-    color: #eef1fb;
-    transition: all .15s ease;
-  }
+  .stButton > button, .stDownloadButton > button { border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06);
+    color: #eef1fb; transition: all .15s ease; }
   .stButton > button:hover { border-color: #6ea8ff; background: rgba(110,168,255,0.12); }
-  .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #5b8cff 0%, #7c5cff 100%);
-    border: none; color: white; font-weight: 600;
-  }
+  .stButton > button[kind="primary"] { background: linear-gradient(135deg, #5b8cff 0%, #7c5cff 100%);
+    border: none; color: white; font-weight: 600; }
   .stButton > button[kind="primary"]:hover { filter: brightness(1.12); }
-
-  /* ---------- inputs / frames ---------- */
   [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
   [data-testid="stTextArea"] textarea, [data-testid="stSelectbox"] [data-baseweb="select"] > div {
-    background: rgba(255,255,255,0.06); color: #eef1fb;
-    border-radius: 10px;
-  }
-  [data-testid="stDataFrame"] {
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px; overflow: hidden;
-  }
-  [data-testid="stExpander"] {
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 12px; background: rgba(255,255,255,0.03);
-  }
-  [data-testid="stVerticalBlockBorderWrapper"] {
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    border-radius: 14px !important;
-    background: rgba(255,255,255,0.025) !important;
-  }
+    background: rgba(255,255,255,0.06); color: #eef1fb; border-radius: 10px; }
+  [data-testid="stDataFrame"] { border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; overflow: hidden; }
+  [data-testid="stExpander"] { border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(255,255,255,0.03); }
+  [data-testid="stVerticalBlockBorderWrapper"] { border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 14px !important; background: rgba(255,255,255,0.025) !important; }
   .stTabs [data-baseweb="tab-list"] { gap: 6px; }
-  .stTabs [data-baseweb="tab"] {
-    border-radius: 10px 10px 0 0; padding: 8px 18px;
-  }
-
-  /* ---------- page header ---------- */
-  .mt-header { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
-  .mt-header .mt-emoji { font-size: 2.1rem; }
-  .mt-header .mt-title { font-size: 1.65rem; font-weight: 700; color: #f2f4fb; letter-spacing: -0.02em; }
+  .stTabs [data-baseweb="tab"] { border-radius: 10px 10px 0 0; padding: 8px 18px; }
+  .mt-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .mt-header .mt-emoji { font-size: 1.9rem; }
+  .mt-header .mt-title { font-size: 1.6rem; font-weight: 700; color: #f2f4fb; letter-spacing: -0.02em; }
   .mt-caption { color: #9aa3c0; margin-bottom: 18px; }
+  .mt-crumbs { color: #7d86a8; font-size: .8rem; margin-bottom: 10px; }
+  .mt-crumbs a { color: #9db4ff; text-decoration: none; }
+  .mt-crumbs a:hover { text-decoration: underline; }
+  .mt-git { display: inline-block; font-family: ui-monospace, monospace; font-size: .72rem;
+    color: #9db4ff; border: 1px solid rgba(157,180,255,.35); border-radius: 8px; padding: 2px 8px; }
+  .mt-git.dirty { color: #ffd479; border-color: rgba(255,212,121,.4); }
+  .mt-quicknav { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  .mt-quicknav .mt-qn { flex: 1; min-width: 90px; font-size: .78rem; padding: 6px 4px; }
+  .mt-search-hit { font-size: .78rem; color: #aeb6d4; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+  .mt-search-hit b { color: #eef1fb; }
+
+  /* responsive — feature 8 */
+  @media (max-width: 720px) {
+    .mt-header { gap: 8px; }
+    .mt-header .mt-title { font-size: 1.25rem; }
+    .mt-quicknav .mt-qn { min-width: 100%; }
+    [data-testid="stMetric"] { padding: 10px 12px; }
+  }
+</style>
+"""
+
+_LIGHT_CSS = """
+<style>
+  .stApp { background: linear-gradient(160deg, #f4f6fb 0%, #eef1f8 55%, #f7f8fc 100%); }
+  .stApp, [data-testid="stHeader"] { background: transparent; }
+  html, body, [class*="css"], .stMarkdown, .stText, p, span, label { color: #1c2333; }
+  [data-testid="stSidebar"] { background: rgba(255,255,255,0.85); border-right: 1px solid rgba(0,0,0,0.06); }
+  [data-testid="stSidebar"] * { color: #2a3247; }
+  h1, h2, h3 { color: #111827 !important; }
+  [data-testid="stMetric"] { background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.07);
+    border-radius: 14px; padding: 14px 16px; box-shadow: 0 2px 10px rgba(15,23,42,0.06); }
+  [data-testid="stMetricLabel"] { color: #5b6478; }
+  [data-testid="stMetricValue"] { color: #111827; }
+  [data-testid="stMetricDelta"] { color: #0d7a3f; }
+  .stButton > button, .stDownloadButton > button { border-radius: 10px;
+    border: 1px solid rgba(0,0,0,0.12); background: rgba(255,255,255,0.8);
+    color: #1c2333; transition: all .15s ease; }
+  .stButton > button:hover { border-color: #3b82f6; background: rgba(59,130,246,0.08); }
+  .stButton > button[kind="primary"] { background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+    border: none; color: white; font-weight: 600; }
+  [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
+  [data-testid="stTextArea"] textarea, [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+    background: rgba(255,255,255,0.9); color: #1c2333; border-radius: 10px; }
+  [data-testid="stDataFrame"] { border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; overflow: hidden; }
+  [data-testid="stExpander"] { border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; background: rgba(255,255,255,0.6); }
+  [data-testid="stVerticalBlockBorderWrapper"] { border: 1px solid rgba(0,0,0,0.07) !important;
+    border-radius: 14px !important; background: rgba(255,255,255,0.7) !important; }
+  .mt-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .mt-header .mt-emoji { font-size: 1.9rem; }
+  .mt-header .mt-title { font-size: 1.6rem; font-weight: 700; color: #111827; letter-spacing: -0.02em; }
+  .mt-caption { color: #5b6478; margin-bottom: 18px; }
+  .mt-crumbs { color: #6b7280; font-size: .8rem; margin-bottom: 10px; }
+  .mt-crumbs a { color: #2563eb; text-decoration: none; }
+  .mt-git { display: inline-block; font-family: ui-monospace, monospace; font-size: .72rem;
+    color: #2563eb; border: 1px solid rgba(37,99,235,.35); border-radius: 8px; padding: 2px 8px; }
+  .mt-git.dirty { color: #b45309; border-color: rgba(180,83,9,.4); }
+  .mt-quicknav { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  .mt-quicknav .mt-qn { flex: 1; min-width: 90px; font-size: .78rem; padding: 6px 4px; }
+  .mt-search-hit { font-size: .78rem; color: #4b5563; padding: 3px 0; border-bottom: 1px solid rgba(0,0,0,0.04); }
+  .mt-search-hit b { color: #111827; }
+
+  @media (max-width: 720px) {
+    .mt-header .mt-title { font-size: 1.25rem; }
+    .mt-quicknav .mt-qn { min-width: 100%; }
+  }
 </style>
 """
 
 
+def _theme_css() -> str:
+    light = st.session_state.get("mt_theme") == "light"
+    return _LIGHT_CSS if light else _DARK_CSS
+
+
+def _toggle_theme() -> None:
+    """Dark/light theme toggle — feature 1 (persisted in session state)."""
+    light = st.session_state.get("mt_theme") == "light"
+    if st.toggle("☀️ Light mode", value=light, key="theme_toggle"):
+        st.session_state["mt_theme"] = "light"
+    else:
+        st.session_state["mt_theme"] = "dark"
+
+
+# --------------------------------------------------------------------------- #
+# git status header — feature 10
+# --------------------------------------------------------------------------- #
+@st.cache_data(ttl=60, show_spinner=False)
+def _git_info() -> tuple:
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "-C", str(ROOT), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        )
+        return head, dirty
+    except Exception:  # noqa: BLE001 - no git, no problem
+        return "", False
+
+
+# --------------------------------------------------------------------------- #
+# page header + breadcrumbs — feature 4 & 10
+# --------------------------------------------------------------------------- #
 def _page_header(emoji: str, title: str, caption: str = "") -> None:
+    head, dirty = _git_info()
+    git_chip = f'<span class="mt-git{" dirty" if dirty else ""}>{head or "no-git"}{"*" if dirty else ""}</span>' if head or dirty else ""
     st.markdown(
         f'<div class="mt-header"><span class="mt-emoji">{emoji}</span>'
-        f'<span class="mt-title">{title}</span></div>',
+        f'<span class="mt-title">{title}</span>{git_chip}</div>',
         unsafe_allow_html=True,
     )
     if caption:
         st.markdown(f'<div class="mt-caption">{caption}</div>', unsafe_allow_html=True)
 
 
+def _crumbs(history: list) -> None:
+    """Breadcrumb trail of previously visited pages — feature 4."""
+    if len(history) > 1:
+        trail = "  /  ".join(html_escape(p) for p in history[-4:])
+        st.markdown(f'<div class="mt-crumbs">↩ {trail}</div>', unsafe_allow_html=True)
+
+
+def html_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# --------------------------------------------------------------------------- #
+# command palette + keyboard shortcuts — features 5 & 6
+# --------------------------------------------------------------------------- #
+_PALETTE_HTML = """
+<div id="mt-palette" style="display:none;position:fixed;top:72px;left:50%;transform:translateX(-50%);
+  width:540px;max-width:92vw;z-index:99999;background:#141a2e;border:1px solid rgba(255,255,255,.16);
+  border-radius:14px;padding:12px;box-shadow:0 14px 44px rgba(0,0,0,.55);">
+  <input id="mt-palette-input" placeholder="Jump to a page…  (Ctrl/⌘+K to open · Esc to close)"
+    style="width:100%;padding:11px;border-radius:9px;border:1px solid rgba(255,255,255,.22);
+    background:#0f1220;color:#eef1fb;font-size:1rem;">
+  <div id="mt-palette-results" style="margin-top:8px;max-height:320px;overflow:auto;"></div>
+</div>
+<script>
+(function () {
+  var PAGES = ["📋 Inventory","🔧 Normalize","🏷️ Metadata","✂️ Segment & Split","🎛️ Generate",
+    "🪄 Prompt builder","📏 Check BPM","🏷️ Labels","📊 Compare","🧹 Hygiene","🏆 Leaderboard","🎧 Listening"];
+  var SHORTCUTS = {g:"🎛️ Generate", l:"🏆 Leaderboard", c:"📊 Compare", h:"🧹 Hygiene",
+    i:"📋 Inventory", n:"🔧 Normalize", m:"🏷️ Metadata", b:"📏 Check BPM"};
+  var box = document.getElementById("mt-palette");
+  var input = document.getElementById("mt-palette-input");
+  var results = document.getElementById("mt-palette-results");
+  var visible = false;
+
+  function post(label) {
+    window.parent.postMessage({type: "streamlit:setComponentValue", value: label}, "*");
+  }
+  function render(filter) {
+    var q = (filter || "").toLowerCase();
+    var hits = PAGES.filter(function (p) { return p.toLowerCase().indexOf(q) !== -1; });
+    results.innerHTML = hits.map(function (p) {
+      return '<div class="mt-pal-item" style="padding:9px 12px;border-radius:9px;cursor:pointer;color:#eef1fb">'
+        + p + '</div>';
+    }).join("");
+    var items = results.querySelectorAll(".mt-pal-item");
+    items.forEach(function (el) {
+      el.addEventListener("click", function () { post(el.textContent); });
+    });
+  }
+  function toggle(show) {
+    visible = show; box.style.display = show ? "block" : "none";
+    if (show) { input.value = ""; render(""); input.focus(); }
+  }
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); toggle(!visible); return; }
+    if (e.key === "Escape") { toggle(false); return; }
+    var tag = (e.target && e.target.tagName) || "";
+    if (visible) { render(input.value); return; }
+    if (tag === "INPUT" || tag === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (SHORTCUTS[e.key]) post(SHORTCUTS[e.key]);
+  });
+  render("");
+})();
+</script>
+"""
+
+
+def _command_palette() -> None:
+    """Keyboard-driven command palette — features 5 & 6 (no-op outside browser)."""
+    try:
+        import streamlit.components.v1 as components
+
+        choice = components.html(_PALETTE_HTML, height=0)
+        if choice and choice in PAGES:  # noqa: F821 - PAGES defined below
+            st.session_state["nav"] = choice
+            st.rerun()
+    except Exception:  # noqa: BLE001 - palette must never break the app
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# sidebar: stats, quick-nav, global search, theme — features 1, 2, 7
+# --------------------------------------------------------------------------- #
+def _sidebar_stats(cfg: Config) -> None:
+    clips = len(list((ROOT / "outputs").glob("*.wav"))) if (ROOT / "outputs").exists() else 0
+    evals = ROOT / "metadata" / "eval_results.jsonl"
+    n_eval = sum(1 for _ in evals.open()) if evals.exists() else 0
+    st.caption("📦 " + f"**{clips}** clips · **{n_eval}** eval rows")
+    st.caption("🎚️ " + cfg.inference.model_name.split("/")[-1])
+    lb = ROOT / "metadata" / "leaderboard.json"
+    if lb.exists():
+        data = json.loads(lb.read_text())
+        if data.get("leaderboard"):
+            st.caption("🏆 " + data["leaderboard"][0]["checkpoint"].split("/")[-1]
+                       + f" · {data['leaderboard'][0]['score']:.2f}")
+
+
+def _quicknav() -> None:
+    """Quick-jump buttons for the most-used pages — feature 2."""
+    st.markdown('<div class="mt-quicknav">', unsafe_allow_html=True)
+    cols = st.columns(3)
+    targets = ["🎛️ Generate", "📊 Compare", "🏆 Leaderboard"]
+    for col, t in zip(cols, targets):
+        if col.button(t, key=f"qn_{t}", use_container_width=True):
+            st.session_state["nav"] = t
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _global_search() -> None:
+    """Search across inventory / labels / eval results — feature 7."""
+    with st.expander("🔎 Global search", expanded=False):
+        q = st.text_input("Search metadata", value="", key="gs_query", placeholder="e.g. chorus, piano, 808…")
+        if not q.strip():
+            st.caption("Type to search inventory, labels, and eval prompts.")
+            return
+        q = q.strip().lower()
+        hits = 0
+        inv = ROOT / "metadata" / "audio_inventory.json"
+        if inv.exists():
+            try:
+                df = pd.read_json(inv)
+                n = sum(1 for _, r in df.iterrows() if q in str(r.get("path", "")).lower())
+                hits += n
+                if n:
+                    st.markdown(f'<div class="mt-search-hit">📋 inventory — <b>{n}</b> match(es)</div>', unsafe_allow_html=True)
+            except Exception:  # noqa: BLE001
+                pass
+        lab = ROOT / "metadata" / "labels.csv"
+        if lab.exists():
+            try:
+                ldf = pd.read_csv(lab)
+                n = int(ldf.astype(str).apply(lambda c: c.str.lower().str.contains(q)).sum().sum())
+                hits += n
+                if n:
+                    st.markdown(f'<div class="mt-search-hit">🏷️ labels — <b>{n}</b> match(es)</div>', unsafe_allow_html=True)
+            except Exception:  # noqa: BLE001
+                pass
+        ev = ROOT / "metadata" / "eval_results.jsonl"
+        if ev.exists():
+            n = 0
+            for ln in ev.open():
+                if q in ln.lower():
+                    n += 1
+            hits += n
+            if n:
+                st.markdown(f'<div class="mt-search-hit">🧪 eval — <b>{n}</b> prompt(s)</div>', unsafe_allow_html=True)
+        if hits == 0:
+            st.caption("No matches.")
+
+
+# --------------------------------------------------------------------------- #
+# shared primitives
+# --------------------------------------------------------------------------- #
 def _skeleton(n: int = 3, height: int = 60) -> None:
-    """Render n loading skeletons (real st.skeleton in the live app)."""
     for _ in range(n):
         st.skeleton(height=height)
 
 
 def _run_job(label: str, fn: Callable, *args, **kwargs):
-    """Run `fn` on a worker thread while animating a progress bar.
-
-    Returns the callable's result; re-raises any exception. The progress bar
-    advances to ~90% while the thread runs and snaps to 100% on completion —
-    a live "work in progress" feel even though the jobs don't report stages.
-    """
+    """Run `fn` on a worker thread while animating a progress bar."""
     out: dict = {}
 
     def _worker() -> None:
@@ -157,17 +376,6 @@ def load_cfg() -> Config:
     cfg = Config.load(p) if p.exists() else Config()
     cfg.project_root = ROOT
     return cfg
-
-
-def _df_or_skeleton(rel: str, n: int = 3):
-    """Read a metadata JSON as a DataFrame, showing skeletons while loading."""
-    with st.spinner("Loading…"):
-        data = _read_json(rel)
-    if data is None:
-        return None
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        return pd.DataFrame(data)
-    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -310,12 +518,24 @@ def page_generate() -> None:
     tokens = c3.slider("Max new tokens", 64, 1500, 256, 64, key="gen_tokens")
     seed = c4.number_input("Seed (0 = random)", min_value=0, value=0, key="gen_seed")
 
+    with st.popover("⚙️ Advanced sampling", use_container_width=True):
+        temperature = st.slider("Temperature", 0.1, 2.0, 1.0, 0.05, key="gen_temp")
+        top_k = st.slider("Top-k", 1, 1000, 250, 10, key="gen_topk")
+        top_p = st.slider("Top-p", 0.5, 1.0, 1.0, 0.01, key="gen_topp")
+        preset = st.selectbox("Preset", ["", "standard", "creative", "precise"], key="gen_preset")
+        negative = st.text_input("Negative prompt (CLAP-checked)", value="", key="gen_negative")
+
     if st.button("Generate", type="primary", key="gen_run"):
         from musictrain.inference import generate
 
         cfg.inference.model_name = model
         cfg.inference.guidance_scale = guidance
         cfg.inference.max_new_tokens = int(tokens)
+        cfg.inference.temperature = temperature
+        cfg.inference.top_k = int(top_k)
+        cfg.inference.top_p = top_p
+        cfg.inference.preset = preset
+        cfg.inference.negative_prompt = negative
 
         def _go():
             return generate(cfg, prompt, out_dir=ROOT / "outputs", seed=int(seed) or None)
@@ -342,12 +562,22 @@ def page_check() -> None:
     target = st.number_input("Target BPM (blank = just measure)", value=0.0, key="chk_target")
     fix = st.checkbox("Time-stretch to fix drift", value=False, key="chk_fix")
 
+    with st.popover("⚙️ Tolerance", use_container_width=True):
+        tol = st.slider("BPM tolerance", 0.01, 0.20, 0.05, 0.01, key="chk_tol",
+                        format="%.2f", help="Fractional deviation allowed before reject")
+        max_stretch = st.slider("Max time-stretch", 0.02, 0.30, 0.10, 0.01, key="chk_stretch",
+                                format="%.2f")
+
     if st.button("Check", type="primary", key="chk_run"):
         from musictrain.evaluate import check
 
+        cfg = load_cfg()
+        cfg.check.bpm_tolerance = tol
+        cfg.check.max_time_stretch = max_stretch
+
         report = _run_job(
             "Checking BPM",
-            check, load_cfg(), ROOT / pick,
+            check, cfg, ROOT / pick,
             target_bpm=float(target) if target > 0 else None,
             fix=fix,
         )
@@ -883,13 +1113,26 @@ PAGES = {
 
 
 def main() -> None:
-    st.markdown(_THEME, unsafe_allow_html=True)
+    st.markdown(_theme_css(), unsafe_allow_html=True)
+    _command_palette()
+
+    history = st.session_state.setdefault("mt_history", [])
     with st.sidebar:
         st.markdown("### 🎵 MusicTrain")
         st.caption(f"Project: `{ROOT.name}`")
-        st.caption(f"Checkpoints: {len(list((ROOT / 'outputs').glob('*.wav')))} clips" if (ROOT / "outputs").exists() else "")
+        _toggle_theme()
+        _quicknav()
+        _global_search()
+        st.markdown("---")
+        _sidebar_stats(load_cfg())
         st.markdown("---")
         choice = st.radio("Go to", list(PAGES.keys()), key="nav")
+
+    # breadcrumb history — feature 4
+    if not history or history[-1] != choice:
+        history.append(choice)
+        st.session_state["mt_history"] = history[-12:]
+    _crumbs(history)
     PAGES[choice]()
 
 

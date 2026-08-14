@@ -366,6 +366,127 @@ def _run_job(label: str, fn: Callable, *args, **kwargs):
     return out.get("result")
 
 
+def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
+    """Feature 23/28: like _run_job but with a Cancel button that stops the wait.
+
+    The worker thread is daemon; cancellation stops the UI wait and marks the
+    job aborted (the thread finishes or is abandoned in the background). The
+    progress bar and cancel button live in one `st.empty()` slot, replaced each
+    tick, so no duplicate-widget errors occur on long jobs.
+    """
+    out: dict = {}
+
+    def _worker() -> None:
+        try:
+            out["result"] = fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    slot = st.empty()
+    cancelled = False
+    pct = 0.0
+    while thread.is_alive():
+        pct = min(pct + 0.03, 0.92)
+        with slot.container():
+            st.progress(pct, text=label)
+            if st.button("⏹ Cancel", key="cancel_job_btn"):
+                cancelled = True
+                break
+        time.sleep(0.12)
+    if not cancelled:
+        thread.join(timeout=5)
+
+    if cancelled:
+        with slot.container():
+            st.progress(1.0, text=f"{label} — cancelled")
+            st.info(f"{label} cancelled (worker finishing in background).")
+        return None
+    if "error" in out:
+        with slot.container():
+            st.progress(1.0, text=f"{label} — failed")
+            st.error(str(out["error"]))
+        raise out["error"]
+    with slot.container():
+        st.progress(1.0, text=f"{label} — done")
+    return out.get("result")
+
+
+def _run_eval_queue(label: str, fn: Callable, *args, **kwargs):
+    """Feature 27+43: run `fn` with live per-prompt progress and cancel.
+
+    `fn` must accept `progress(done, total)` and `cancel() -> bool` callbacks
+    (``run_eval`` supports both). The bar shows real prompt counts, and the
+    cancel button asks ``run_eval`` to stop after the current prompt.
+    """
+    state = {"done": 0, "total": 0, "result": None, "error": None, "cancelled": False}
+
+    def _cb(done: int, total: int) -> None:
+        state["done"], state["total"] = done, total
+
+    def _cancel() -> bool:
+        return state["cancelled"]
+
+    def _worker() -> None:
+        try:
+            state["result"] = fn(*args, progress=_cb, cancel=_cancel, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            state["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    slot = st.empty()
+    while thread.is_alive():
+        done, total = state["done"], state["total"]
+        frac = (done / total) if total else 0.0
+        with slot.container():
+            st.progress(frac, text=f"{label} — {done}/{total} prompts")
+            if st.button("⏹ Cancel", key="cancel_eval_btn"):
+                state["cancelled"] = True
+                break
+        time.sleep(0.15)
+    thread.join(timeout=5)
+
+    if state["error"]:
+        with slot.container():
+            st.progress(1.0, text=f"{label} — failed")
+            st.error(str(state["error"]))
+        raise state["error"]
+    done, total = state["done"], state["total"]
+    frac = (done / total) if total else 1.0
+    with slot.container():
+        st.progress(frac, text=f"{label} — {done}/{total} prompts (done)")
+    return state["result"]
+
+
+def _zip_report() -> None:
+    """Feature 24: one-click bundle of the eval + metrics reports as a zip."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    meta = ROOT / "metadata"
+    files = [
+        ("eval_results.csv", meta / "eval_results.csv"),
+        ("eval_report.html", meta / "eval_report.html"),
+        ("leaderboard.json", meta / "leaderboard.json"),
+        ("significance.json", meta / "significance.json"),
+        ("metrics.json", meta / "metrics.json"),
+        ("quality_report.json", meta / "quality_report.json"),
+    ]
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, path in files:
+            if path.exists():
+                zf.write(path, arcname=f"musictrain/{name}")
+    st.download_button(
+        "📦 Download report bundle (.zip)", data=buf.getvalue(),
+        file_name="musictrain_report.zip", mime="application/zip", type="primary",
+    )
+
+
 def _read_json(rel: str):
     p = ROOT / "metadata" / rel
     return json.loads(p.read_text()) if p.exists() else None
@@ -601,6 +722,47 @@ def page_inventory() -> None:
     with t3:
         _table(df, "inv", "inventory.csv", filter_col="path", height=360)
 
+    # feature 33 — project wizard: bootstrap layout -> upload -> normalize -> features
+    with st.expander("🚀 Project wizard", expanded=False):
+        st.caption(
+            "Bootstrap (or resume) the corpus pipeline: folder layout → raw audio → "
+            "normalized clean → feature extraction. Steps already done are detected "
+            "from disk, so it doubles as a resume helper."
+        )
+        steps = [
+            ("Layout", "data/ + metadata/ folders", lambda: (ROOT / "data").exists()),
+            ("Upload raw", "audio in data/raw", lambda: any((ROOT / "data" / "raw").glob("*"))),
+            ("Normalize", "converted audio in data/clean", lambda: any((ROOT / "data" / "clean").glob("*"))),
+            ("Features", "metadata/manifest.jsonl", lambda: (ROOT / "metadata" / "manifest.jsonl").exists()),
+        ]
+        done = [name for name, _d, check in steps if check()]
+        st.progress(len(done) / len(steps), text=f"Pipeline steps done: {len(done)}/{len(steps)}")
+        for name, desc, _check in steps:
+            mark = "✅" if name in done else "⬜"
+            st.markdown(f"{mark} **{name}** — {desc}")
+
+        if st.button("▶ Run remaining steps", type="primary", key="wiz_run"):
+            from musictrain.paths import ensure_layout
+
+            ensure_layout(ROOT)
+            if "Normalize" not in done:
+                from musictrain.audio.normalize import normalize
+
+                converted, skipped, failed = _run_job_cancellable(
+                    "Normalizing audio", normalize, ROOT, load_cfg(), force=False,
+                )
+                if converted is not None:
+                    st.success(f"{converted} converted · {skipped} skipped · {failed} failed")
+            if "Features" not in done:
+                from musictrain.metadata import extract
+
+                records = _run_job_cancellable(
+                    "Extracting features", extract, ROOT, load_cfg(), which="clean",
+                )
+                if records is not None:
+                    st.success(f"Processed {len(records)} files -> metadata/manifest.jsonl")
+            st.rerun()
+
 
 # --------------------------------------------------------------------------- #
 # 🔧 Normalize
@@ -609,6 +771,30 @@ def page_normalize() -> None:
     _page_header("🔧", "Normalize audio", "Converts data/raw/* to data/clean/* (mono, 32 kHz, PCM).")
     cfg = load_cfg()
     force = st.checkbox("Force overwrite", value=False, key="norm_force")
+
+    # feature 30 — drag & drop upload straight into data/raw, then normalize
+    with st.expander("⬆ Upload audio (drag & drop)", expanded=False):
+        st.caption(
+            "Drop files here — they land in data/raw and the normalizer picks "
+            "them up on the next run (mono, 32 kHz PCM → data/clean)."
+        )
+        up = st.file_uploader(
+            "Audio files", type=["wav", "mp3", "flac", "ogg", "m4a"],
+            accept_multiple_files=True, key="norm_upload",
+        )
+        if up and st.button("Save uploads to data/raw", type="secondary", key="norm_save_uploads"):
+            from musictrain.paths import ensure_layout
+
+            ensure_layout(ROOT)
+            raw = ROOT / "data" / "raw"
+            raw.mkdir(parents=True, exist_ok=True)
+            n = 0
+            for f in up:
+                dest = raw / f.name
+                dest.write_bytes(f.getbuffer())
+                n += 1
+            st.success(f"Saved {n} file(s) -> data/raw — run normalization to convert them.")
+            st.rerun()
 
     if st.button("Run normalization", type="primary", key="norm_run"):
         from musictrain.audio.normalize import normalize
@@ -619,8 +805,11 @@ def page_normalize() -> None:
         def _go():
             return normalize(ROOT, cfg, force=force)
 
-        converted, skipped, failed = _run_job("Normalizing audio", _go)
-        st.success(f"{converted} converted · {skipped} skipped · {failed} failed")
+        converted, skipped, failed = _run_job_cancellable("Normalizing audio", _go)
+        if converted is None:
+            st.info("Normalization cancelled.")
+        else:
+            st.success(f"{converted} converted · {skipped} skipped · {failed} failed")
 
 
 # --------------------------------------------------------------------------- #
@@ -641,10 +830,13 @@ def page_features() -> None:
                 limit=int(limit),
             )
 
-        records = _run_job("Extracting features", _go)
-        st.success(f"Processed {len(records)} files")
-        if records:
-            st.dataframe(pd.DataFrame(records), width="stretch")
+        records = _run_job_cancellable("Extracting features", _go)
+        if records is None:
+            st.info("Feature extraction cancelled.")
+        else:
+            st.success(f"Processed {len(records)} files")
+            if records:
+                st.dataframe(pd.DataFrame(records), width="stretch")
 
 
 # --------------------------------------------------------------------------- #
@@ -659,8 +851,9 @@ def page_split() -> None:
         if st.button("Segment audio", type="primary", key="seg_run"):
             from musictrain.audio.segment import segment
 
-            segs = _run_job("Segmenting audio", segment, ROOT, cfg)
-            st.success(f"{len(segs)} segments written")
+            segs = _run_job_cancellable("Segmenting audio", segment, ROOT, cfg)
+            if segs is not None:
+                st.success(f"{len(segs)} segments written")
     with col2:
         st.subheader("Train/val/test split")
         st.write(
@@ -670,7 +863,7 @@ def page_split() -> None:
         if st.button("Run split", type="primary", key="split_run"):
             from musictrain.split import split
 
-            _run_job("Splitting corpus", split, ROOT, cfg)
+            _run_job_cancellable("Splitting corpus", split, ROOT, cfg)
             st.success("Split complete")
 
     splits = ROOT / "metadata" / "splits.json"
@@ -727,11 +920,56 @@ def page_generate() -> None:
         def _go():
             return generate(cfg, prompt, out_dir=ROOT / "outputs", seed=int(seed) or None)
 
-        result = _run_job("Generating audio (MPS)", _go)
-        st.success(f"Saved {result['path']} ({result['duration']}s, {result['device']})")
-        st.subheader("Result")
-        st.audio(str(result["path"]))
-        st.json(result)
+        result = _run_job_cancellable("Generating audio (MPS)", _go)
+        if result is None:
+            st.info("Generation cancelled.")
+        else:
+            st.success(f"Saved {result['path']} ({result['duration']}s, {result['device']})")
+            st.subheader("Result")
+            st.audio(str(result["path"]))
+            st.json(result)
+
+    # feature 26 — batch prompt editor (one prompt per line, sequential generate)
+    with st.expander("🧪 Batch prompts", expanded=False):
+        st.caption(
+            "Generate several prompts in one run — one prompt per line, each "
+            "saved to outputs/ with the advanced settings above."
+        )
+        batch = st.text_area(
+            "Batch prompts (one per line)", value="", height=140, key="gen_batch",
+            placeholder="dark piano intro, 70 BPM, A minor\nverse, 84 BPM, trap hats, airy pads",
+        )
+        if st.button("Generate batch", type="primary", key="gen_batch_run"):
+            prompts = [ln.strip() for ln in batch.splitlines() if ln.strip()]
+            if not prompts:
+                st.warning("Enter at least one prompt.")
+            else:
+                from musictrain.inference import generate
+
+                cfg.inference.model_name = model
+                cfg.inference.guidance_scale = guidance
+                cfg.inference.max_new_tokens = int(tokens)
+                cfg.inference.temperature = temperature
+                cfg.inference.top_k = int(top_k)
+                cfg.inference.top_p = top_p
+                cfg.inference.preset = preset
+                cfg.inference.negative_prompt = negative
+
+                saved, failed = [], 0
+                slot = st.empty()
+                for i, p in enumerate(prompts, 1):
+                    with slot.container():
+                        st.progress(i / len(prompts), text=f"Generating {i}/{len(prompts)} — {p[:48]}…")
+                    try:
+                        res = generate(cfg, p, out_dir=ROOT / "outputs", seed=int(seed) or None)
+                        saved.append(res["path"])
+                    except Exception as exc:  # noqa: BLE001 - one bad prompt must not kill the batch
+                        failed += 1
+                        st.error(f"Prompt {i} failed: {exc}")
+                with slot.container():
+                    st.success(f"Batch done: {len(saved)} saved, {failed} failed")
+                if saved:
+                    _audio_grid(saved, cols=4)
 
     # recent outputs grid (feature 15)
     recent = sorted((ROOT / "outputs").glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)[:8]
@@ -770,26 +1008,29 @@ def page_check() -> None:
         cfg.check.bpm_tolerance = tol
         cfg.check.max_time_stretch = max_stretch
 
-        report = _run_job(
+        report = _run_job_cancellable(
             "Checking BPM",
             check, cfg, ROOT / pick,
             target_bpm=float(target) if target > 0 else None,
             fix=fix,
         )
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.json(report)
-            _copy_button(json.dumps(report, indent=2), "chk_copy")
-        with c2:
-            t_w, t_s = st.tabs(["Waveform", "Spectrogram"])
-            with t_w:
-                _waveform_chart(str(ROOT / pick), "chk")
-            with t_s:
-                _spectrogram_chart(str(ROOT / pick), "chk")
-        st.subheader("Audio")
-        st.audio(str(ROOT / pick))
-        if report.get("fixed_path"):
-            st.audio(report["fixed_path"])
+        if report is None:
+            st.info("Check cancelled.")
+        else:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.json(report)
+                _copy_button(json.dumps(report, indent=2), "chk_copy")
+            with c2:
+                t_w, t_s = st.tabs(["Waveform", "Spectrogram"])
+                with t_w:
+                    _waveform_chart(str(ROOT / pick), "chk")
+                with t_s:
+                    _spectrogram_chart(str(ROOT / pick), "chk")
+            st.subheader("Audio")
+            st.audio(str(ROOT / pick))
+            if report.get("fixed_path"):
+                st.audio(report["fixed_path"])
 
 
 # --------------------------------------------------------------------------- #
@@ -1073,6 +1314,86 @@ def page_labels() -> None:
                 with st.expander(f"Unused {dim} terms ({len(missing)})"):
                     st.write(", ".join(missing))
 
+    # features 34-35 — label editor with vocab dropdowns + batch assign
+    st.subheader("✏️ Label editor")
+    if df is None:
+        if st.button("Scaffold labels.csv template", key="lab_scaffold"):
+            from musictrain.labels import scaffold
+
+            scaffold(ROOT)
+            st.rerun()
+        st.info("No labels.csv yet — scaffold one above, then edit in place.")
+    else:
+        custom_vocab: dict = {}
+        cv_path = ROOT / "metadata" / "custom_vocab.json"
+        if cv_path.exists():
+            custom_vocab = json.loads(cv_path.read_text())
+
+        options: dict = {}
+        for dim in ("genre", "mood", "instruments", "section", "section_type"):
+            terms = set(VOCAB.get(dim, set())) | set(custom_vocab.get(dim, []))
+            options[dim] = sorted(terms)
+        editor_cfg = {
+            "genre": st.column_config.SelectboxColumn("genre", options=options["genre"]),
+            "section": st.column_config.SelectboxColumn("section", options=options["section"]),
+            "section_type": st.column_config.SelectboxColumn("section_type", options=options["section_type"]),
+            "mood": st.column_config.TextColumn("mood", help="pipe-separated, e.g. dark|emotional"),
+            "instruments": st.column_config.TextColumn("instruments", help="pipe-separated"),
+        }
+        edited = st.data_editor(
+            df, key="lab_editor", num_rows="dynamic", hide_index=True,
+            width="stretch", column_config=editor_cfg,
+            disabled=["source_id"],
+        )
+
+        c_new, c_save, c_assign = st.columns([2, 1, 2])
+        with c_new:
+            new_term = st.text_input(
+                "Add vocab term (dim:term)", value="", key="lab_newterm",
+                placeholder="mood:euphoric",
+            )
+            if st.button("➕ Add term", key="lab_addterm") and new_term:
+                dim, _, term = new_term.partition(":")
+                dim, term = dim.strip(), term.strip()
+                if dim in VOCAB and term:
+                    custom_vocab.setdefault(dim, [])
+                    if term not in custom_vocab[dim]:
+                        custom_vocab[dim].append(term)
+                    cv_path.write_text(json.dumps(custom_vocab, indent=2))
+                    st.success(f"Added {dim}:{term} (custom vocab -> metadata/custom_vocab.json). "
+                               "The CLI vocab check won't know it yet — extend labels.py to persist it.")
+                    st.rerun()
+                else:
+                    st.error("Format: dim:term with a known dim (genre/mood/instruments/section).")
+        with c_save:
+            if st.button("💾 Save labels.csv", type="primary", key="lab_save"):
+                edited.to_csv(labels_csv, index=False)
+                st.success(f"Saved {len(edited)} rows -> metadata/labels.csv")
+                st.rerun()
+        with c_assign:
+            sel = st.multiselect(
+                "Batch-assign to rows", edited.index.tolist(), key="lab_sel",
+                format_func=lambda i: f"#{i} {edited.loc[i, 'source_id']}",
+            )
+            with st.popover("Apply values to selected", width="stretch"):
+                b_genre = st.selectbox("genre", [""] + options["genre"], key="lab_bg")
+                b_mood = st.text_input("mood (pipe-separated)", "", key="lab_bm")
+                b_inst = st.text_input("instruments (pipe-separated)", "", key="lab_bi")
+                b_sec = st.selectbox("section", [""] + options["section"], key="lab_bs")
+                if st.button("Apply", type="primary", key="lab_bapply") and sel:
+                    for i in sel:
+                        if b_genre:
+                            edited.loc[i, "genre"] = b_genre
+                        if b_mood:
+                            edited.loc[i, "mood"] = b_mood
+                        if b_inst:
+                            edited.loc[i, "instruments"] = b_inst
+                        if b_sec:
+                            edited.loc[i, "section"] = b_sec
+                    edited.to_csv(labels_csv, index=False)
+                    st.success(f"Applied to {len(sel)} row(s) and saved labels.csv")
+                    st.rerun()
+
     st.subheader("💡 Label suggestions")
     sug = _read_json("label_suggestions.json")
     if not sug:
@@ -1168,11 +1489,15 @@ def page_leaderboard() -> None:
     _page_header("🏆", "Leaderboard", "Ranks checkpoints by adherence, BPM fidelity, verdict share, human rating.")
     cfg = load_cfg()
 
-    if st.button("Rebuild leaderboard", type="primary", key="lb_rebuild"):
-        from musictrain.leaderboard import build
+    c_btn, c_zip = st.columns([2, 1])
+    with c_btn:
+        if st.button("Rebuild leaderboard", type="primary", key="lb_rebuild"):
+            from musictrain.leaderboard import build
 
-        _run_job("Ranking checkpoints", build, cfg)
-        st.rerun()
+            _run_job_cancellable("Ranking checkpoints", build, cfg)
+            st.rerun()
+    with c_zip:
+        _zip_report()  # feature 29 — one-click report bundle
 
     with st.spinner("Loading leaderboard…"):
         _leaderboard_view(cfg)
@@ -1202,6 +1527,23 @@ def page_listening() -> None:
                 r = json.loads(ln)
                 existing[(r["prompt"], r["checkpoint"])] = r
 
+    checkpoints = sorted({r.get("checkpoint", "?") for r in rows})
+    picked = st.multiselect("Checkpoints", checkpoints, default=checkpoints[:1], key="lst_ckpts")
+    if picked:
+        rows = [r for r in rows if r.get("checkpoint") in picked]
+    if not rows:
+        st.info("No clips for the selected checkpoint(s).")
+        return
+
+    c_ab, c_kp = st.columns(2)
+    ab = c_ab.toggle("👥 A/B compare (needs 2+ checkpoints)", value=False, key="lst_ab")
+    keypad = c_kp.toggle("⚡ Rapid keypad ratings", value=False, key="lst_keypad",
+                         help="One-click 1–5 buttons per clip instead of sliders.")
+
+    if ab and len(picked) >= 2:
+        _ab_compare(rows, picked, existing, ratings_path)
+        return
+
     max_clips = min(len(rows), 50)
     if max_clips <= 1:
         limit, idx = 1, 0  # slider needs min < max, so skip it for a single clip
@@ -1227,10 +1569,22 @@ def page_listening() -> None:
             else:
                 st.warning("Audio file missing")
             c1, c2 = st.columns([1, 3])
-            rating = c1.slider(
-                f"Rating {i + 1}", 1, 5, int(prev.get("rating") or 3),
-                key=f"rating_{i}", label_visibility="collapsed",
-            )
+            if keypad:
+                # feature 32 — rapid-fire 1–5 keypad, one click per rating
+                chosen = st.session_state.get(f"kp_{i}", int(prev.get("rating") or 3))
+                c1.caption("Rating")
+                for v in range(1, 6):
+                    if c1.button(
+                        str(v), key=f"kp_btn_{i}_{v}",
+                        type="primary" if v == chosen else "secondary",
+                    ):
+                        st.session_state[f"kp_{i}"] = v
+                rating = chosen
+            else:
+                rating = c1.slider(
+                    f"Rating {i + 1}", 1, 5, int(prev.get("rating") or 3),
+                    key=f"rating_{i}", label_visibility="collapsed",
+                )
             note = c2.text_input(
                 "Note (optional)", value=prev.get("note", ""),
                 key=f"note_{i}", label_visibility="collapsed",
@@ -1258,6 +1612,60 @@ def page_listening() -> None:
         st.rerun()
 
     st.caption(f"Already rated: {len(existing)} prompt/checkpoint pairs")
+
+
+def _ab_compare(rows: list, picked: list, existing: dict, ratings_path: Path) -> None:
+    """Feature 31 — side-by-side A/B listening: same prompt across checkpoints."""
+    from collections import defaultdict
+
+    by_prompt: dict = defaultdict(dict)
+    for r in rows:
+        by_prompt[(r["prompt"], r.get("section"), r.get("bpm_target"))][r.get("checkpoint")] = r
+    pairs = [(k, v) for k, v in by_prompt.items() if len(v) >= 2]
+    if not pairs:
+        st.info("No prompts generated by 2+ of the selected checkpoints — run the "
+                "same prompt set on another checkpoint first.")
+        return
+
+    pairs = pairs[:20]
+    st.caption(f"{len(pairs)} shared prompt(s) · one column per checkpoint — toggle audio to A/B them.")
+    ratings = {}
+    for i, ((prompt, section, bpm), ck_rows) in enumerate(pairs):
+        with st.container(border=True):
+            st.caption(f"**{section}** · {bpm} BPM")
+            st.write(prompt)
+            cols = st.columns(len(ck_rows))
+            for (ck, r), col in zip(ck_rows.items(), cols):
+                with col:
+                    st.markdown(f"**{ck.split('/')[-1]}**")
+                    ap = r.get("audio_path")
+                    if ap and Path(ap).exists():
+                        st.audio(str(ap))
+                    else:
+                        st.warning("missing audio")
+                    st.caption(f"CLAP {r.get('clap_score')} · dev {r.get('deviation')}")
+                    key = (prompt, ck)
+                    prev = existing.get(key, {})
+                    chosen = st.session_state.get(f"ab_{i}_{ck}", int(prev.get("rating") or 3))
+                    row_btns = st.columns(5)
+                    for v in range(1, 6):
+                        if row_btns[v - 1].button(
+                            str(v), key=f"ab_btn_{i}_{ck}_{v}",
+                            type="primary" if v == chosen else "secondary",
+                        ):
+                            st.session_state[f"ab_{i}_{ck}"] = v
+                    ratings[key] = {"rating": chosen, "note": prev.get("note", "")}
+
+    if st.button("Save A/B ratings", type="primary", key="ab_save"):
+        saved = 0
+        with ratings_path.open("a") as fh:
+            for (prompt, checkpoint), rr in ratings.items():
+                if rr["rating"] != existing.get((prompt, checkpoint), {}).get("rating", 3):
+                    fh.write(json.dumps({"prompt": prompt, "checkpoint": checkpoint,
+                                         "rating": rr["rating"], "note": rr["note"]}) + "\n")
+                    saved += 1
+        st.success(f"Saved {saved} A/B rating(s) -> metadata/human_ratings.jsonl")
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -1300,9 +1708,65 @@ def page_promptbuilder() -> None:
     if st.button("Generate with MusicGen", type="primary", key="pb_gen"):
         from musictrain.inference import generate
 
-        result = _run_job("Generating audio (MPS)", generate, cfg, prompt, out_dir=ROOT / "outputs")
-        st.success(f"Saved {result['path']} ({result['duration']}s)")
-        st.audio(str(result["path"]))
+        result = _run_job_cancellable("Generating audio (MPS)", generate, cfg, prompt, out_dir=ROOT / "outputs")
+        if result is not None:
+            st.success(f"Saved {result['path']} ({result['duration']}s)")
+            st.audio(str(result["path"]))
+
+
+# --------------------------------------------------------------------------- #
+# 🎯 Eval queue
+# --------------------------------------------------------------------------- #
+def page_eval() -> None:
+    _page_header(
+        "🎯", "Eval queue",
+        "Run the fixed prompt set with live per-prompt progress; cancel or "
+        "resume any time. Results stream to metadata/eval_results.jsonl.",
+    )
+    from musictrain.evalset import load as load_evalset, run_eval as _run_eval
+
+    cfg = load_cfg()
+    prompts = load_evalset(cfg.project_root)
+    if not prompts:
+        st.info("No eval prompt set yet — run `musictrain evalset` on the CLI first.")
+        return
+
+    sections = sorted({p.get("section", "?") for p in prompts})
+    c1, c2, c3 = st.columns(3)
+    secs = c1.multiselect("Sections", sections, default=sections[:2], key="ev_secs")
+    seeds = c2.number_input("Seeds (majority verdict)", 1, 5, 1, key="ev_seeds")
+    limit = c3.number_input("Limit (0 = all)", 0, len(prompts), 0, key="ev_limit")
+
+    st.caption(
+        f"{len(prompts)} prompts in the set · current result file has "
+        f"{sum(1 for _ in open(ROOT / 'metadata' / 'eval_results.jsonl')) if (ROOT / 'metadata' / 'eval_results.jsonl').exists() else 0} rows"
+    )
+
+    if st.button("▶ Start eval", type="primary", key="ev_run"):
+        # protect the current baseline before run_eval overwrites the result file
+        evf = ROOT / "metadata" / "eval_results.jsonl"
+        if evf.exists():
+            (evf.parent / "eval_results.jsonl.bak").write_bytes(evf.read_bytes())
+
+        section = ",".join(secs) if secs else None
+        results = _run_eval_queue(
+            "Running eval",
+            _run_eval,
+            cfg,
+            limit=int(limit),
+            section=section,
+            seeds=int(seeds),
+        )
+        if results is None:
+            st.info("Eval cancelled — completed prompts were saved to the result file.")
+        else:
+            ok = sum(1 for r in results if r.get("status") == "ok")
+            st.success(
+                f"Eval finished: {len(results)} prompts, {ok} in-tolerance by majority "
+                "-> metadata/eval_results.jsonl (previous file backed up to .bak)"
+            )
+            cols = [c for c in ("prompt", "section", "bpm_target", "detected_bpm", "deviation", "clap_score", "status") if c in results[0]]
+            st.dataframe(pd.DataFrame(results)[cols], width="stretch")
 
 
 PAGES = {
@@ -1317,6 +1781,7 @@ PAGES = {
     "📊 Compare": page_compare,
     "🧹 Hygiene": page_hygiene,
     "🏆 Leaderboard": page_leaderboard,
+    "🎯 Eval": page_eval,
     "🎧 Listening": page_listening,
 }
 

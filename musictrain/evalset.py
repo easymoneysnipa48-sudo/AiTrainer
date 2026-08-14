@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import jsonlines
 
@@ -244,6 +244,8 @@ def run_eval(
     out_dir: Optional[Path] = None,
     section: Optional[str] = None,
     seeds: int = 1,
+    progress: Optional[Callable[[int, int], None]] = None,
+    cancel: Optional[Callable[[], bool]] = None,
 ) -> List[dict]:
     from .evaluate import check
     from .experiments import log_eval, log_inference
@@ -270,7 +272,11 @@ def run_eval(
     results: List[dict] = []
     console.step(f"Running eval over {len(prompts)} prompts x {seeds} seed(s) (device={device})")
 
-    for p in prompts:
+    total = len(prompts)
+    for done, p in enumerate(prompts, 1):
+        if cancel and cancel():
+            console.warn("Eval cancelled by user.")
+            break
         seed_records: List[dict] = []
         for i in range(seeds):
             seed = p["seed"] + i
@@ -318,6 +324,8 @@ def run_eval(
             seed_records.append(rec)
 
         results.append(_aggregate(p, seed_records, cfg))
+        if progress:
+            progress(done, total)
 
     del model
 

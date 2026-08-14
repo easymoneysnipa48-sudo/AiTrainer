@@ -447,10 +447,12 @@ def _run_job(label: str, fn: Callable, *args, **kwargs):
     if "error" in out:
         bar.progress(1.0, text=f"{label} — failed")
         _log_line(f"✗ {label}: {out['error']}")
+        _json_log("job", label=label, status="failed", error=str(out["error"]))
         st.error(str(out["error"]))
         raise out["error"]
     bar.progress(1.0, text=f"{label} — done")
     _log_line(f"✓ {label}")
+    _json_log("job", label=label, status="done")
     try:
         st.toast(f"✅ {label} — done")  # feature 41
         _beep()                          # feature 45
@@ -498,16 +500,19 @@ def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
             st.progress(1.0, text=f"{label} — cancelled")
             st.info(f"{label} cancelled (worker finishing in background).")
         _log_line(f"■ {label} cancelled")
+        _json_log("job", label=label, status="cancelled")
         return None
     if "error" in out:
         with slot.container():
             st.progress(1.0, text=f"{label} — failed")
             st.error(str(out["error"]))
         _log_line(f"✗ {label}: {out['error']}")
+        _json_log("job", label=label, status="failed", error=str(out["error"]))
         raise out["error"]
     with slot.container():
         st.progress(1.0, text=f"{label} — done")
     _log_line(f"✓ {label}")
+    _json_log("job", label=label, status="done")
     try:
         st.toast(f"✅ {label} — done")
         _beep()
@@ -561,12 +566,14 @@ def _run_live(label: str, fn: Callable, *args, progress_kw: str = "progress",
             st.progress(1.0, text=f"{label} — failed")
             st.error(str(state["error"]))
         _log_line(f"✗ {label}: {state['error']}")
+        _json_log("job", label=label, status="failed", error=str(state["error"]))
         raise state["error"]
     done, total = state["done"], state["total"]
     frac = (done / total) if total else 1.0
     with slot.container():
         st.progress(frac, text=f"{label} — {done}/{total} (done)")
     _log_line(f"✓ {label} ({done}/{total})")
+    _json_log("job", label=label, status="done", progress=f"{done}/{total}")
     try:
         st.toast(f"✅ {label} — done")
         _beep()
@@ -608,6 +615,16 @@ def _zip_report() -> None:
 def _read_json(rel: str):
     p = ROOT / "metadata" / rel
     return json.loads(p.read_text()) if p.exists() else None
+
+
+def _json_log(event: str, **fields) -> None:
+    """Append a structured event to metadata/runlog.jsonl (advanced #46)."""
+    try:
+        from musictrain.telemetry import json_log
+
+        json_log(ROOT, event, **fields)
+    except Exception:  # noqa: BLE001 - logging must never break the UI
+        pass
 
 
 def load_cfg() -> Config:
@@ -1332,6 +1349,9 @@ def page_hygiene() -> None:
         dedup = _read_json("duplicates.json")
         corpus = _read_json("corpus_stats.json")
         ood = _read_json("ood_tracks.json")
+        drift = _read_json("drift.json")
+        curation = _read_json("curation_scores.json")
+        leakage = _read_json("leakage.json")
 
     q_flagged = (
         sum(1 for r in quality if r.get("grade") in ("C", "F")) if quality else 0
@@ -1350,8 +1370,28 @@ def page_hygiene() -> None:
     c3.metric("Corpus tracks", f"{corpus['n_tracks']}" if corpus else "—")
     c4.metric("OOD flagged", f"{len(ood)}" if ood is not None else "—")
 
+    drift_count = len(drift.get("drifted_features", [])) if drift else None
+    top_cur = (curation.get("tracks") or [{}])[0].get("score") if curation else None
+    leak_count = leakage.get("cross_split_duplicates", 0) if leakage else None
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric(
+        "Drifted features",
+        f"{drift_count}" if drift_count is not None else "—",
+        "ref→cur" if drift else None,
+    )
+    d2.metric("Top curation score", f"{top_cur}" if top_cur is not None else "—")
+    d3.metric(
+        "Cross-split leaks",
+        f"{leak_count}" if leak_count is not None else "—",
+        "train/val/test" if leak_count else None,
+    )
+    d4.metric(
+        "Files checked (leakage)",
+        f"{leakage['files_checked']}" if leakage else "—",
+    )
+
     cfg = load_cfg()
-    b1, b2, b3, b4 = st.columns(4)
+    b1, b2, b3, b4, b5, b6, b7 = st.columns(7)
     if b1.button("Run quality", width="stretch", key="hyg_quality"):
         from musictrain.audio.quality import quality as run_q
 
@@ -1372,10 +1412,29 @@ def page_hygiene() -> None:
 
         _run_job("Flagging OOD tracks", curate_ood, ROOT, cfg)
         st.rerun()
+    if b5.button("Run drift", width="stretch", key="hyg_drift"):
+        from musictrain.drift import drift_report
+
+        _run_job("Computing drift", drift_report, ROOT, cfg,
+                 reference="clean", current="train")
+        st.rerun()
+    if b6.button("Run curation", width="stretch", key="hyg_curation"):
+        from musictrain.curation import curation_score
+
+        _run_job("Scoring curation", curation_score, ROOT, cfg)
+        st.rerun()
+    if b7.button("Run leakage", width="stretch", key="hyg_leakage"):
+        from musictrain.labelprop import leakage_check
+
+        _run_job("Checking leakage", leakage_check, ROOT, cfg)
+        st.rerun()
 
     st.markdown("---")
 
-    t_qual, t_dedup, t_corp, t_ood = st.tabs(["🔊 Quality", "👯 Duplicates", "📈 Corpus", "🚫 OOD"])
+    t_qual, t_dedup, t_corp, t_ood, t_drift, t_cur, t_leak = st.tabs(
+        ["🔊 Quality", "👯 Duplicates", "📈 Corpus", "🚫 OOD",
+         "📉 Drift", "⭐ Curation", "🔓 Leakage"]
+    )
 
     with t_qual:
         st.subheader("Audio quality")
@@ -1445,6 +1504,72 @@ def page_hygiene() -> None:
             odf = pd.DataFrame(ood)
             cols = [c for c in ("path", "bpm", "key", "genre", "mood", "ood_reasons") if c in odf]
             st.dataframe(odf[cols], width="stretch", hide_index=True)
+
+    with t_drift:
+        st.subheader("Feature drift")
+        if not drift:
+            st.info("No drift report yet — run the sweep above or `musictrain drift`.")
+        else:
+            st.caption(
+                f"{drift['reference']} vs {drift['current']} · "
+                f"{drift['reference_n']} → {drift['current_n']} tracks · "
+                f"KS p < {drift.get('threshold', 0.05)} or PSI > 0.25 flags drift"
+            )
+            if drift.get("drifted_features"):
+                st.warning(f"Drifted: {', '.join(drift['drifted_features'])}")
+            else:
+                st.success("No drifted features detected.")
+
+            cont = drift.get("continuous") or {}
+            if cont:
+                cdf = pd.DataFrame(cont).T.reset_index().rename(columns={"index": "feature"})
+                cdf = cdf.rename(
+                    columns={
+                        "reference_mean": "ref mean", "current_mean": "cur mean",
+                        "delta": "Δ", "ks_pvalue": "KS p", "psi": "PSI",
+                        "drifted": "drifted",
+                    }
+                )
+                st.caption("Continuous features")
+                st.dataframe(cdf, width="stretch", hide_index=True)
+
+            disc = drift.get("discrete") or {}
+            if disc:
+                ddf = pd.DataFrame(disc).T.reset_index().rename(columns={"index": "feature"})
+                ddf = ddf.rename(columns={"psi": "PSI", "drifted": "drifted"})
+                st.caption("Discrete features")
+                st.dataframe(ddf, width="stretch", hide_index=True)
+
+    with t_cur:
+        st.subheader("Curation scores")
+        if not curation:
+            st.info("No curation scores yet — run the sweep above or `musictrain curation`.")
+        else:
+            tracks = curation.get("tracks") or []
+            st.caption(f"Scored {curation.get('scored', len(tracks))} track(s) · higher = keep first")
+            if tracks:
+                tdf = pd.DataFrame(tracks)
+                cols = [c for c in ("path", "score", "quality", "novelty", "coverage", "dup_penalty", "genre") if c in tdf]
+                st.bar_chart(tdf.set_index("path")["score"].head(25))
+                st.dataframe(tdf[cols].head(100), width="stretch", hide_index=True)
+
+    with t_leak:
+        st.subheader("Cross-split leakage")
+        if not leakage:
+            st.info("No leakage check yet — run the sweep above or `musictrain labelprop --check-leakage`.")
+        else:
+            leaks = leakage.get("leaks") or []
+            st.caption(
+                f"Checked {leakage.get('files_checked', 0)} file(s) across "
+                f"{', '.join(leakage.get('splits', []))}"
+            )
+            if not leaks:
+                st.success("No cross-split near-duplicates — training/eval are clean.")
+            else:
+                st.warning(f"{len(leaks)} cross-split near-duplicate pair(s) found")
+                ldf = pd.DataFrame(leaks)
+                cols = [c for c in ("split_a", "a", "split_b", "b", "similarity") if c in ldf]
+                st.dataframe(ldf[cols], width="stretch", hide_index=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -2047,9 +2172,53 @@ def _logs_view() -> None:
     )
 
 
+@st.fragment(run_every=10)
+def _runlog_view() -> None:
+    """Auto-refreshing structured event log (metadata/runlog.jsonl, #46)."""
+    try:
+        from musictrain.telemetry import read_runlog
+
+        events = read_runlog(ROOT, limit=200)
+    except Exception:  # noqa: BLE001
+        events = []
+
+    if not events:
+        st.info("No structured events yet — run any dashboard job and it lands here.")
+        return
+
+    kinds = sorted({e.get("event", "?") for e in events})
+    kind = st.selectbox(
+        "Event type", ["all", *kinds], index=0, key="runlog_kind",
+    )
+    shown = events if kind == "all" else [e for e in events if e.get("event") == kind]
+
+    rows = []
+    for e in reversed(shown[-200:]):
+        payload = {k: v for k, v in e.items() if k not in ("at", "event")}
+        rows.append(
+            {
+                "at": (e.get("at") or "")[11:19],
+                "event": e.get("event"),
+                "details": json.dumps(payload, default=str)[:200],
+            }
+        )
+    st.caption(f"{len(shown)} event(s) from metadata/runlog.jsonl · auto-refreshes every 10s")
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    if rows:
+        st.download_button(
+            "⬇ Download runlog",
+            data="\n".join(json.dumps(e) for e in shown).encode("utf-8"),
+            file_name="runlog.jsonl", mime="application/json", width="stretch",
+        )
+
+
 def page_logs() -> None:
     _page_header("🪵", "Activity log", "Live tail of every dashboard job — started, done, cancelled, failed.")
-    _logs_view()
+    t_cli, t_runlog = st.tabs(["🪵 CLI log", "🧾 Runlog events"])
+    with t_cli:
+        _logs_view()
+    with t_runlog:
+        _runlog_view()
 
 
 PAGES = {

@@ -691,6 +691,106 @@ def cmd_labelprop(args) -> int:
     return 0
 
 
+def cmd_registry(args) -> int:
+    from .registry import scan_registry
+
+    cfg = _build_config(args)
+    scan_registry(cfg.project_root, cfg)
+    return 0
+
+
+def cmd_diff_weights(args) -> int:
+    from .registry import diff_weights
+
+    cfg = _build_config(args)
+    a = (cfg.project_root / "checkpoints" / args.a).resolve()
+    b = (cfg.project_root / "checkpoints" / args.b).resolve()
+    diff_weights(a, b, top_k=args.top)
+    return 0
+
+
+def cmd_archive(args) -> int:
+    from .registry import archive
+
+    cfg = _build_config(args)
+    archive(cfg.project_root, cfg, args.checkpoint)
+    return 0
+
+
+def cmd_gate(args) -> int:
+    from .gates import eval_gate
+
+    cfg = _build_config(args)
+    report = eval_gate(
+        cfg.project_root, cfg,
+        baseline=args.baseline, candidate=args.candidate,
+        max_clap_drop=args.max_clap_drop, max_deviation_increase=args.max_dev,
+    )
+    return 0 if report.get("passed", False) else 1
+
+
+def cmd_drift_check(args) -> int:
+    from .gates import drift_detector
+
+    cfg = _build_config(args)
+    report = drift_detector(
+        cfg.project_root, cfg,
+        reference=args.reference, current=args.current,
+        ks_threshold=args.ks, psi_threshold=args.psi,
+    )
+    return 0 if report.get("passed", False) else 1
+
+
+def cmd_promote(args) -> int:
+    from .gates import promotion_report
+
+    cfg = _build_config(args)
+    promotion_report(cfg.project_root, cfg, args.checkpoint, baseline=args.baseline)
+    return 0
+
+
+def cmd_monitor(args) -> int:
+    from .monitor import training_monitor
+
+    cfg = _build_config(args)
+    training_monitor(cfg, limit=args.limit)
+    return 0
+
+
+def cmd_matrix(args) -> int:
+    from .monitor import experiment_matrix
+
+    cfg = _build_config(args)
+    experiment_matrix(cfg)
+    return 0
+
+
+def cmd_modelcard(args) -> int:
+    from .monitor import model_card
+
+    cfg = _build_config(args)
+    model_card(cfg, checkpoint=args.checkpoint or "")
+    return 0
+
+
+def cmd_early_stop(args) -> int:
+    from .monitor import early_stop
+
+    cfg = _build_config(args)
+    if not args.series:
+        console.error("Pass --series as comma-separated CLAP values, e.g. 0.30,0.32,0.31")
+        return 2
+    series = [float(x) for x in args.series.split(",")]
+    result = early_stop(series, patience=args.patience, min_delta=args.min_delta)
+    console.info(f"best={result['best_clap']} at step {result['best_step']} "
+                 f"({result['steps_since_best']} step(s) since)")
+    if result["should_stop"]:
+        console.warn(f"STOP: {result['reason']}")
+        return 0
+    console.ok(f"KEEP TRAINING: {result['reason']}")
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .experiments import launch_ui
 
@@ -1150,6 +1250,75 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--check-leakage", action="store_true",
                     help="Check train/val/test for cross-split duplicates instead")
     sp.set_defaults(func=cmd_labelprop)
+
+    # registry
+    sp = sub.add_parser("registry", help="Index checkpoints under checkpoints/")
+    add_common(sp)
+    sp.set_defaults(func=cmd_registry)
+
+    # diff
+    sp = sub.add_parser("diff", help="Compare weight deltas between two checkpoints")
+    add_common(sp)
+    sp.add_argument("--a", required=True, help="Checkpoint dir name in checkpoints/")
+    sp.add_argument("--b", required=True, help="Checkpoint dir name in checkpoints/")
+    sp.add_argument("--top", type=int, default=10, help="Largest deltas to print")
+    sp.set_defaults(func=cmd_diff_weights)
+
+    # archive
+    sp = sub.add_parser("archive", help="Zip a checkpoint + config + eval report")
+    add_common(sp)
+    sp.add_argument("--checkpoint", required=True, help="Checkpoint dir name")
+    sp.set_defaults(func=cmd_archive)
+
+    # gate
+    sp = sub.add_parser("gate", help="Block checkpoint promotion on eval regression")
+    add_common(sp)
+    sp.add_argument("--baseline", required=True)
+    sp.add_argument("--candidate", required=True)
+    sp.add_argument("--max-clap-drop", type=float, default=0.02)
+    sp.add_argument("--max-dev", type=float, default=0.05)
+    sp.set_defaults(func=cmd_gate)
+
+    # drift-check
+    sp = sub.add_parser("drift-check", help="CI gate: fail when features drift")
+    add_common(sp)
+    sp.add_argument("--reference", default="clean")
+    sp.add_argument("--current", default="train")
+    sp.add_argument("--ks", type=float, default=0.05)
+    sp.add_argument("--psi", type=float, default=0.25)
+    sp.set_defaults(func=cmd_drift_check)
+
+    # promote
+    sp = sub.add_parser("promote", help="Render a promotion report for a checkpoint")
+    add_common(sp)
+    sp.add_argument("--checkpoint", required=True)
+    sp.add_argument("--baseline", default=None, help="Baseline checkpoint to diff against")
+    sp.set_defaults(func=cmd_promote)
+
+    # monitor
+    sp = sub.add_parser("monitor", help="Summarize MLflow eval/inference CLAP trend")
+    add_common(sp)
+    sp.add_argument("--limit", type=int, default=50)
+    sp.set_defaults(func=cmd_monitor)
+
+    # matrix
+    sp = sub.add_parser("matrix", help="Flatten MLflow runs into a metrics matrix")
+    add_common(sp)
+    sp.set_defaults(func=cmd_matrix)
+
+    # modelcard
+    sp = sub.add_parser("modelcard", help="Render a markdown model card")
+    add_common(sp)
+    sp.add_argument("--checkpoint", default=None, help="Checkpoint name (default: most rows)")
+    sp.set_defaults(func=cmd_modelcard)
+
+    # early-stop
+    sp = sub.add_parser("early-stop", help="Decide whether to halt fine-tuning on CLAP")
+    add_common(sp)
+    sp.add_argument("--series", default="", help="Comma-separated CLAP history")
+    sp.add_argument("--patience", type=int, default=3)
+    sp.add_argument("--min-delta", type=float, default=0.005)
+    sp.set_defaults(func=cmd_early_stop)
 
     # ui (MLflow)
     sp = sub.add_parser("ui", help="Launch the MLflow tracking UI")

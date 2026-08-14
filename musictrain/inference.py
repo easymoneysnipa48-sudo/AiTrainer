@@ -38,7 +38,7 @@ def resolve_device(preferred: str) -> str:
 
 def load_model(cfg: InferenceCfg) -> Tuple:
     import torch
-    from transformers import AutoProcessor, MusicgenForConditionalGeneration
+    from transformers import AutoModelForTextToWaveform, AutoProcessor
 
     device = resolve_device(cfg.device)
     dtype = torch.float32
@@ -46,7 +46,10 @@ def load_model(cfg: InferenceCfg) -> Tuple:
         dtype = torch.float16
 
     console.info(f"Loading {cfg.model_name} on {device} (dtype={cfg.torch_dtype})…")
-    model = MusicgenForConditionalGeneration.from_pretrained(
+    # AutoModelForTextToWaveform dispatches to MusicgenForConditionalGeneration
+    # for small/medium and MusicgenMelodyForConditionalGeneration for the
+    # melody checkpoint (base class would leave encoder_attn uninitialized).
+    model = AutoModelForTextToWaveform.from_pretrained(
         cfg.model_name, torch_dtype=dtype
     ).to(device)
     processor = AutoProcessor.from_pretrained(cfg.model_name)

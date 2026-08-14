@@ -17,11 +17,43 @@ from .experiments import _configure
 STAGES = ("None", "Staging", "Production", "Archived")
 
 
+def _resolve_model_dir(cfg: Config, name: str) -> Optional[Path]:
+    """Resolve a checkpoint name to a local model directory.
+
+    Order: checkpoints/<name> (fine-tuned), an absolute path, or a HuggingFace
+    model id resolved from the local cache (offline-safe).
+    """
+    cand = cfg.project_root / "checkpoints" / name
+    if cand.is_dir():
+        return cand
+    p = Path(name)
+    if p.is_dir():
+        return p
+    if "/" in name:  # HF model id like facebook/musicgen-small
+        # prefer the raw cache snapshot — it may be a partial download (only
+        # the safetensors variant) but still a fully loadable model dir
+        cache = Path.home() / ".cache" / "huggingface" / "hub"
+        folder = cache / f"models--{name.replace('/', '--')}" / "snapshots"
+        if folder.is_dir():
+            snaps = sorted(folder.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            if snaps:
+                return snaps[0]
+        try:
+            from huggingface_hub import snapshot_download
+
+            resolved = snapshot_download(name, local_files_only=True)
+            return Path(resolved)
+        except Exception as exc:  # noqa: BLE001
+            console.warn(f"Model {name!r} not in the local HF cache: {exc}")
+    return None
+
+
 def register_model(cfg: Config, name: str, stage: str = "None") -> Optional[dict]:
-    """Log checkpoints/<name> as an MLflow model and return its version info."""
-    model_dir = cfg.project_root / "checkpoints" / name
-    if not model_dir.is_dir():
-        console.error(f"Checkpoint not found: {model_dir}")
+    """Log a checkpoint (dir under checkpoints/, absolute path, or HF model id)
+    as an MLflow model and return its version info."""
+    model_dir = _resolve_model_dir(cfg, name)
+    if model_dir is None:
+        console.error(f"Checkpoint not found: {cfg.project_root / 'checkpoints' / name}")
         return None
     if stage not in STAGES:
         console.error(f"stage must be one of {STAGES} (got {stage!r})")

@@ -205,6 +205,38 @@ def test_cost_log_and_summary(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# 44 — MLflow registry: HF model-id resolution from the local cache
+# --------------------------------------------------------------------------- #
+def test_resolve_model_dir_hf_cache(tmp_path, monkeypatch):
+    from musictrain.config import Config
+    from musictrain.registry_ml import _resolve_model_dir
+
+    # fake HF cache: models--facebook--musicgen-small/snapshots/<hash>/
+    cache = tmp_path / ".cache" / "huggingface" / "hub"
+    snap = cache / "models--facebook--musicgen-small" / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"w")
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    cfg = Config()
+    cfg.project_root = tmp_path
+    resolved = _resolve_model_dir(cfg, "facebook/musicgen-small")
+    assert resolved is not None and resolved == snap
+
+    # checkpoint dir under checkpoints/ takes priority
+    ckpt = tmp_path / "checkpoints" / "my-tuned"
+    ckpt.mkdir(parents=True)
+    assert _resolve_model_dir(cfg, "my-tuned") == ckpt
+
+    # absolute path works too
+    assert _resolve_model_dir(cfg, str(snap)) == snap
+
+    # unknown -> None
+    assert _resolve_model_dir(cfg, "nope/does-not-exist") is None
+
+
+# --------------------------------------------------------------------------- #
 # 49 — incremental eval
 # --------------------------------------------------------------------------- #
 def test_run_eval_incremental_keeps_passed(tmp_path, monkeypatch):

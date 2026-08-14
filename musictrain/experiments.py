@@ -159,11 +159,12 @@ def search_runs(cfg: Config):
             "detected_bpm": col("metrics.detected_bpm"),
             "deviation": col("metrics.deviation"),
             "duration_s": col("metrics.duration_s"),
+            "clap_score": col("metrics.clap_score"),
             "n_tracks": col("metrics.n_tracks"),
             "bpm_mean": col("metrics.bpm_mean"),
         }
     )
-    for c in ("target_bpm", "detected_bpm", "deviation", "duration_s", "n_tracks", "bpm_mean"):
+    for c in ("target_bpm", "detected_bpm", "deviation", "duration_s", "clap_score", "n_tracks", "bpm_mean"):
         out[c] = pd.to_numeric(out[c], errors="coerce")
     return out
 

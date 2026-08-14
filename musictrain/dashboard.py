@@ -281,7 +281,7 @@ def _quicknav() -> None:
     cols = st.columns(3)
     targets = ["🎛️ Generate", "📊 Compare", "🏆 Leaderboard"]
     for col, t in zip(cols, targets):
-        if col.button(t, key=f"qn_{t}", use_container_width=True):
+        if col.button(t, key=f"qn_{t}", width="stretch"):
             st.session_state["nav"] = t
             st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
@@ -379,6 +379,193 @@ def load_cfg() -> Config:
 
 
 # --------------------------------------------------------------------------- #
+# Data tables + charts — UI batch 2 (features 11-20)
+# --------------------------------------------------------------------------- #
+def _csv_bytes(df: pd.DataFrame) -> str:
+    return df.to_csv(index=False).encode("utf-8").decode("utf-8")
+
+
+def _csv_download(df: pd.DataFrame, filename: str, label: str = "⬇ CSV") -> None:
+    st.download_button(
+        label, data=df.to_csv(index=False).encode("utf-8"),
+        file_name=filename, mime="text/csv", width="stretch",
+    )
+
+
+def _table(
+    df: pd.DataFrame,
+    key: str,
+    filename: str,
+    progress_cols: Optional[list] = None,
+    filter_col: Optional[str] = None,
+    height: Optional[int] = None,
+) -> None:
+    """Feature 11-13: sortable table with optional progress columns, a filter,
+    and a CSV download."""
+    config = {}
+    for c in progress_cols or []:
+        if c in df.columns:
+            config[c] = st.column_config.ProgressColumn(c, min_value=0.0, max_value=1.0, format="%.2f")
+
+    col_f, col_d = st.columns([4, 1])
+    q = ""
+    if filter_col and filter_col in df.columns:
+        q = col_f.text_input(f"Filter by {filter_col}", value="", key=f"flt_{key}",
+                             label_visibility="collapsed", placeholder=f"Filter by {filter_col}…")
+    view = df
+    if q.strip():
+        mask = df[filter_col].astype(str).str.contains(q.strip(), case=False, na=False)
+        view = df[mask]
+    with col_d:
+        _csv_download(view, filename)
+    st.dataframe(view, width="stretch", hide_index=True, height=height,
+                 column_config=config or None)
+
+
+def _copy_button(text: str, key: str) -> None:
+    """Feature 14: copy-to-clipboard button for prompts/JSON."""
+    import streamlit.components.v1 as components
+
+    payload = text.replace("`", "\\`").replace("${`, `}", "")
+    js = f"""
+    <button onclick="navigator.clipboard.writeText(`{payload}`);this.innerHTML='✓ Copied'"
+      style="border-radius:8px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);
+      color:#eef1fb;padding:5px 14px;cursor:pointer;font-size:.8rem">⧉ Copy</button>
+    """
+    components.html(js, height=36)
+
+
+def _audio_grid(files: list, cols: int = 4) -> None:
+    """Feature 15: inline audio player grid instead of stacked players."""
+    if not files:
+        return
+    for i in range(0, len(files), cols):
+        row = files[i:i + cols]
+        cs = st.columns(cols)
+        for c, f in zip(cs, row):
+            with c:
+                st.caption(str(Path(f).name)[:34])
+                st.audio(str(f))
+
+
+def _waveform_chart(path: str, key: str) -> None:
+    """Feature 16: waveform thumbnail via librosa envelope + altair."""
+    import altair as alt
+    import librosa
+    import numpy as np
+
+    try:
+        y, sr = librosa.load(str(path), sr=8000, mono=True)
+        hop = max(1, len(y) // 240)
+        env = np.abs(y[::hop])
+        n = len(env)
+        xs = np.linspace(0, len(y) / sr, n)
+        pdf = pd.DataFrame({"t": xs, "amp": env})
+        chart = (
+            alt.Chart(pdf)
+            .mark_area(opacity=0.5, color="#5b8cff")
+            .encode(x=alt.X("t:Q", axis=None), y=alt.Y("amp:Q", axis=None))
+            .properties(height=60)
+        )
+        st.altair_chart(chart, width="stretch", key=f"wav_{key}")
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"waveform unavailable: {exc}")
+
+
+def _spectrogram_chart(path: str, key: str) -> None:
+    """Feature 17: spectrogram view for a clip."""
+    import librosa
+    import numpy as np
+
+    try:
+        y, sr = librosa.load(str(path), sr=16000, mono=True)
+        S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=64)
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(9, 2.6))
+        img = librosa.display.specshow(librosa.power_to_db(S, ref=np.max),
+                                       sr=sr, x_axis="time", y_axis="mel", ax=ax)
+        fig.colorbar(img, ax=ax, fraction=0.025)
+        ax.set_title(Path(path).name)
+        st.pyplot(fig)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"spectrogram unavailable: {exc}")
+
+
+def _clap_sparkline(df: pd.DataFrame, key: str) -> None:
+    """Feature 18: CLAP score trend over eval runs (ordered by run index)."""
+    import altair as alt
+
+    d = df.dropna(subset=["clap_score"])
+    if d.empty:
+        return
+    d = d.reset_index().rename(columns={"index": "run"})
+    chart = (
+        alt.Chart(d)
+        .mark_line(point=True, color="#7c5cff")
+        .encode(x=alt.X("run:Q", axis=None, title="run"),
+                y=alt.Y("clap_score:Q", scale=alt.Scale(zero=False)),
+                tooltip=["run", "clap_score", "model"])
+        .properties(height=90)
+    )
+    st.altair_chart(chart, width="stretch", key=f"spark_{key}")
+
+
+def _bpm_heatmap(rows: list, key: str) -> None:
+    """Feature 19: BPM deviation heatmap (prompt x checkpoint)."""
+    import altair as alt
+
+    data = []
+    for r in rows:
+        dev = r.get("deviation")
+        if dev is None:
+            continue
+        short = (r.get("prompt") or "")[:26]
+        data.append({"prompt": short, "checkpoint": (r.get("checkpoint") or "").split("/")[-1][:16],
+                     "|dev|": abs(float(dev))})
+    if len(data) < 2:
+        st.caption("Not enough rows for a heatmap.")
+        return
+    pdf = pd.DataFrame(data)
+    chart = (
+        alt.Chart(pdf)
+        .mark_rect()
+        .encode(x=alt.X("checkpoint:N", sort=None),
+                y=alt.Y("prompt:N", sort=None),
+                color=alt.Color("|dev|:Q", scale=alt.Scale(scheme="viridis"), title="|dev|"))
+        .properties(height=max(180, 12 * pdf["prompt"].nunique()))
+    )
+    st.altair_chart(chart, width="stretch", key=f"hm_{key}")
+
+
+def _radar_chart(entries: list, key: str) -> None:
+    """Feature 20: per-tag CLAP radar for the top checkpoint."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if not entries:
+        return
+    e = entries[0]
+    tags = (e.get("clap_per_tag") or {})
+    if not tags:
+        return
+    labels = sorted(tags)
+    vals = [tags[t] for t in labels]
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    vals += vals[:1]
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(5, 4), subplot_kw=dict(polar=True))
+    ax.plot(angles, vals, color="#5b8cff", linewidth=2)
+    ax.fill(angles, vals, color="#5b8cff", alpha=0.25)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylim(0, 1)
+    ax.set_title(e["checkpoint"].split("/")[-1], fontsize=10)
+    st.pyplot(fig)
+
+
+# --------------------------------------------------------------------------- #
 # 📋 Inventory
 # --------------------------------------------------------------------------- #
 def page_inventory() -> None:
@@ -412,7 +599,7 @@ def page_inventory() -> None:
             hdf = pd.DataFrame({"bin_low_s": edges[:-1], "count": hist})
             st.bar_chart(hdf.set_index("bin_low_s")["count"])
     with t3:
-        st.dataframe(df, width="stretch")
+        _table(df, "inv", "inventory.csv", filter_col="path", height=360)
 
 
 # --------------------------------------------------------------------------- #
@@ -518,7 +705,7 @@ def page_generate() -> None:
     tokens = c3.slider("Max new tokens", 64, 1500, 256, 64, key="gen_tokens")
     seed = c4.number_input("Seed (0 = random)", min_value=0, value=0, key="gen_seed")
 
-    with st.popover("⚙️ Advanced sampling", use_container_width=True):
+    with st.popover("⚙️ Advanced sampling", width="stretch"):
         temperature = st.slider("Temperature", 0.1, 2.0, 1.0, 0.05, key="gen_temp")
         top_k = st.slider("Top-k", 1, 1000, 250, 10, key="gen_topk")
         top_p = st.slider("Top-p", 0.5, 1.0, 1.0, 0.01, key="gen_topp")
@@ -542,8 +729,16 @@ def page_generate() -> None:
 
         result = _run_job("Generating audio (MPS)", _go)
         st.success(f"Saved {result['path']} ({result['duration']}s, {result['device']})")
+        st.subheader("Result")
         st.audio(str(result["path"]))
         st.json(result)
+
+    # recent outputs grid (feature 15)
+    recent = sorted((ROOT / "outputs").glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)[:8]
+    if recent:
+        st.markdown("---")
+        st.subheader("Recent outputs")
+        _audio_grid(recent, cols=4)
 
 
 # --------------------------------------------------------------------------- #
@@ -562,7 +757,7 @@ def page_check() -> None:
     target = st.number_input("Target BPM (blank = just measure)", value=0.0, key="chk_target")
     fix = st.checkbox("Time-stretch to fix drift", value=False, key="chk_fix")
 
-    with st.popover("⚙️ Tolerance", use_container_width=True):
+    with st.popover("⚙️ Tolerance", width="stretch"):
         tol = st.slider("BPM tolerance", 0.01, 0.20, 0.05, 0.01, key="chk_tol",
                         format="%.2f", help="Fractional deviation allowed before reject")
         max_stretch = st.slider("Max time-stretch", 0.02, 0.30, 0.10, 0.01, key="chk_stretch",
@@ -581,7 +776,17 @@ def page_check() -> None:
             target_bpm=float(target) if target > 0 else None,
             fix=fix,
         )
-        st.json(report)
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.json(report)
+            _copy_button(json.dumps(report, indent=2), "chk_copy")
+        with c2:
+            t_w, t_s = st.tabs(["Waveform", "Spectrogram"])
+            with t_w:
+                _waveform_chart(str(ROOT / pick), "chk")
+            with t_s:
+                _spectrogram_chart(str(ROOT / pick), "chk")
+        st.subheader("Audio")
         st.audio(str(ROOT / pick))
         if report.get("fixed_path"):
             st.audio(report["fixed_path"])
@@ -669,7 +874,10 @@ def page_compare() -> None:
             view = view[view["model"] == sel_model]
 
     st.subheader("Runs")
-    st.dataframe(view, width="stretch")
+    _table(view, "cmp", "mlflow_runs.csv", progress_cols=["clap_score"], height=320)
+
+    st.subheader("CLAP trend over runs")
+    _clap_sparkline(view, "cmp")
 
     ev = view.dropna(subset=["target_bpm", "detected_bpm"])
     if not ev.empty:
@@ -729,22 +937,22 @@ def page_hygiene() -> None:
 
     cfg = load_cfg()
     b1, b2, b3, b4 = st.columns(4)
-    if b1.button("Run quality", use_container_width=True, key="hyg_quality"):
+    if b1.button("Run quality", width="stretch", key="hyg_quality"):
         from musictrain.audio.quality import quality as run_q
 
         _run_job("Scoring quality", run_q, ROOT, cfg)
         st.rerun()
-    if b2.button("Run dedup", use_container_width=True, key="hyg_dedup"):
+    if b2.button("Run dedup", width="stretch", key="hyg_dedup"):
         from musictrain.dedup import find_duplicates
 
         _run_job("Finding duplicates", find_duplicates, ROOT, cfg)
         st.rerun()
-    if b3.button("Run corpus", use_container_width=True, key="hyg_corpus"):
+    if b3.button("Run corpus", width="stretch", key="hyg_corpus"):
         from musictrain.corpus import corpus as run_c
 
         _run_job("Computing corpus stats", run_c, ROOT, cfg)
         st.rerun()
-    if b4.button("Run OOD", use_container_width=True, key="hyg_ood"):
+    if b4.button("Run OOD", width="stretch", key="hyg_ood"):
         from musictrain.ood import curate_ood
 
         _run_job("Flagging OOD tracks", curate_ood, ROOT, cfg)
@@ -942,18 +1150,18 @@ def _leaderboard_view(cfg: Config) -> None:
         }
         for e in entries
     ]
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    _table(pd.DataFrame(rows), "lb", "leaderboard.csv",
+           progress_cols=["score", "ok %", "mean CLAP"], height=280)
 
-    st.subheader("Per-tag CLAP adherence (#46)")
-    tag_rows = []
-    for e in entries:
-        for tag, val in (e.get("clap_per_tag") or {}).items():
-            if val is not None:
-                tag_rows.append({"checkpoint": e["checkpoint"], "tag": tag, "CLAP": val})
-    if tag_rows:
-        st.bar_chart(pd.DataFrame(tag_rows).pivot(index="tag", columns="checkpoint", values="CLAP"))
-    else:
-        st.info("No per-tag scores — run eval with `eval.per_tag_clap: true`.")
+    c_rad, c_hm = st.columns([1, 2])
+    with c_rad:
+        st.subheader("Per-tag CLAP radar")
+        _radar_chart(entries, "lb")
+    with c_hm:
+        st.subheader("BPM deviation heatmap")
+        from musictrain.report import load_results
+
+        _bpm_heatmap(load_results(ROOT), "lb")
 
 
 def page_leaderboard() -> None:
@@ -1014,6 +1222,7 @@ def page_listening() -> None:
             st.write(r["prompt"])
             ap = r.get("audio_path")
             if ap and Path(ap).exists():
+                _waveform_chart(str(ap), f"lst_{i}")
                 st.audio(str(ap))
             else:
                 st.warning("Audio file missing")

@@ -271,4 +271,19 @@ def run_eval(
         f"Eval complete: {len(results)} prompts -> {out.relative_to(cfg.project_root)} "
         f"({ok} BPM in-tolerance by majority)"
     )
+
+    from .reproduce import capture_run
+
+    capture_run(
+        cfg,
+        "eval",
+        extra={
+            "n_prompts": len(results),
+            "seeds": seeds,
+            "section": section or "",
+            "limit": limit or 0,
+            "ok_majority": ok,
+            "results_file": "metadata/eval_results.jsonl",
+        },
+    )
     return results

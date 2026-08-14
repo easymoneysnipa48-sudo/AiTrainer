@@ -41,7 +41,17 @@ inference:
   max_new_tokens: 256
   temperature: 1.0
   top_k: 250
+  top_p: 1.0
   seed: null
+  preset: ''
+  presets:
+    standard: {temperature: 1.0, top_k: 250, top_p: 1.0, guidance_scale: 3.0}
+    creative: {temperature: 1.2, top_k: 400, top_p: 0.98, guidance_scale: 2.0}
+    precise: {temperature: 0.7, top_k: 120, top_p: 0.95, guidance_scale: 4.5}
+  target_seconds: null
+  negative_prompt: ''
+  negative_threshold: 0.25
+  negative_retries: 0
 check:
   bpm_tolerance: 0.05
   max_time_stretch: 0.1

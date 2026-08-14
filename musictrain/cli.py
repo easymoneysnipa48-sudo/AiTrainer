@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -139,17 +140,30 @@ def cmd_infer(args) -> int:
         icfg.guidance_scale = args.guidance
     if args.max_new_tokens is not None:
         icfg.max_new_tokens = args.max_new_tokens
+    if args.preset is not None:
+        icfg.preset = args.preset
+    if args.target_seconds is not None:
+        icfg.target_seconds = args.target_seconds
+    if args.negative is not None:
+        icfg.negative_prompt = args.negative
+    if args.negative_retries is not None:
+        icfg.negative_retries = args.negative_retries
 
     out_dir = Path(args.out) if args.out else cfg.project_root / "outputs"
 
     if args.prompts_file:
-        prompts = [
-            ln.strip() for ln in Path(args.prompts_file).read_text().splitlines() if ln.strip()
-        ]
-        if not prompts:
+        items = []
+        for ln in Path(args.prompts_file).read_text().splitlines():
+            if not ln.strip():
+                continue
+            if ln.lstrip().startswith("{"):
+                items.append(json.loads(ln))
+            else:
+                items.append(ln.strip())
+        if not items:
             console.error("Prompts file is empty.")
             return 1
-        results = generate_batch(cfg, prompts, out_dir=out_dir, seed=args.seed)
+        results = generate_batch(cfg, items, out_dir=out_dir, seed=args.seed)
         from .experiments import log_inference
 
         for r in results:
@@ -158,10 +172,63 @@ def cmd_infer(args) -> int:
         if not args.prompt:
             console.error("Provide --prompt or --prompts-file.")
             return 1
-        result = generate(cfg, args.prompt, out_dir=out_dir, seed=args.seed)
+        result = generate(
+            cfg, args.prompt, out_dir=out_dir, seed=args.seed,
+            continue_from=Path(args.continue_from) if args.continue_from else None,
+            melody_from=Path(args.melody_from) if args.melody_from else None,
+            preset=args.preset,
+            target_seconds=args.target_seconds,
+            negative_prompt=args.negative,
+            negative_retries=args.negative_retries,
+        )
+        if not result:
+            return 1
         from .experiments import log_inference
 
         log_inference(cfg, result)
+    return 0
+
+
+def cmd_presets(args) -> int:
+    cfg = _build_config(args)
+    for name, vals in cfg.inference.presets.items():
+        console.info(
+            f"{name:10s} temperature={vals.get('temperature')} top_k={vals.get('top_k')} "
+            f"top_p={vals.get('top_p')} guidance={vals.get('guidance_scale')}"
+        )
+    console.info(f"active preset: {cfg.inference.preset or '(none — raw knobs)'}")
+    return 0
+
+
+def cmd_manifest(args) -> int:
+    from .reproduce import diff, load_entries
+
+    cfg = _build_config(args)
+    entries = load_entries(cfg.project_root)
+    if not entries:
+        console.warn("No manifest entries yet — run `musictrain infer` or `eval`.")
+        return 0
+    if args.diff is not None:
+        i, j = args.diff
+        try:
+            a, b = entries[-i], entries[-j]
+        except IndexError:
+            console.error(f"Only {len(entries)} entries — indices 1..{len(entries)} (1 = most recent).")
+            return 1
+        console.title(f"diff -{i} vs -{j}:")
+        for line in diff(a, b):
+            console.info("  " + line)
+        return 0
+    for e in entries[-args.latest:]:
+        commit = e.get("git_commit") or "?"
+        if e.get("git_dirty"):
+            commit += "*"
+        console.info(
+            f"{str(e.get('kind','?')):10s} {str(e.get('at',''))[:19]}  commit={commit}  "
+            f"model={e.get('model')}  vocab=v{e.get('vocab_version')}  "
+            f"prompt={(e.get('prompt') or '')[:50]!r}"
+        )
+    console.info(f"{len(entries)} total entrie(s) in metadata/repro_manifest.jsonl")
     return 0
 
 
@@ -522,7 +589,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-new-tokens", type=int, default=None)
     sp.add_argument("--seed", type=int, default=None)
     sp.add_argument("--out", default=None, help="Output directory")
+    sp.add_argument("--preset", default=None, help="Sampling preset: standard | creative | precise (#37)")
+    sp.add_argument("--target-seconds", type=float, default=None, help="Generate ~N seconds of audio (#39)")
+    sp.add_argument("--negative", default=None, help="CLAP-checked 'no X' constraints (#33)")
+    sp.add_argument("--negative-retries", type=int, default=None, help="Auto-regenerate until negative constraint passes (#33)")
+    sp.add_argument("--continue-from", default=None, help="Continue from an existing audio clip (#35)")
+    sp.add_argument("--melody-from", default=None, help="Follow a clip's melody (use musicgen-melody) (#36)")
     sp.set_defaults(func=cmd_infer)
+
+    # presets
+    sp = sub.add_parser("presets", help="List sampling presets (#37)")
+    add_common(sp)
+    sp.set_defaults(func=cmd_presets)
+
+    # manifest
+    sp = sub.add_parser("manifest", help="Show/diff reproducibility manifest entries (#38)")
+    add_common(sp)
+    sp.add_argument("--latest", type=int, default=5, help="Show the N most recent entries")
+    sp.add_argument("--diff", type=int, nargs=2, default=None, metavar=("IDX", "IDX"),
+                    help="Diff two entries by recency index (1 = most recent), e.g. --diff 1 2")
+    sp.set_defaults(func=cmd_manifest)
 
     # labels
     sp = sub.add_parser("labels", help="Scaffold or validate the labels CSV")

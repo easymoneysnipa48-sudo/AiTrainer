@@ -1,12 +1,24 @@
-"""MusicGen text-conditional inference on Apple Silicon (MPS) with CPU fallback."""
+"""MusicGen text-conditional inference on Apple Silicon (MPS) with CPU fallback.
+
+Phase 5 additions:
+* #33  negative prompting — CLAP-scored "no X" constraints with auto-retry
+* #34  batch prompt files — plain lines or JSONL with per-item options
+* #35  continuation — condition on an existing audio clip (input_values)
+* #36  melody conditioning — same mechanism, intended for musicgen-melody
+* #37  sampling presets — standard/creative/precise knob sets
+* #38  repro manifest — every run pins config/vocab/git state
+* #39  target seconds — derive max_new_tokens from a desired duration
+"""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import console
 from .config import Config, InferenceCfg
 from .util import now_stamp, sanitize_slug
+
+TOKENS_PER_SECOND = 50  # MusicGen codec rate at 32 kHz
 
 
 def resolve_device(preferred: str) -> str:
@@ -64,6 +76,114 @@ def _sample_rate(model) -> int:
     return 32000
 
 
+# --------------------------------------------------------------------------- #
+# Phase 5 helpers
+# --------------------------------------------------------------------------- #
+
+
+def _sampling_kwargs(icfg: InferenceCfg, preset: Optional[str] = None) -> Dict[str, Any]:
+    """Build generate() sampling kwargs, optionally from a named preset (#37)."""
+    kw: Dict[str, Any] = dict(
+        do_sample=icfg.do_sample,
+        guidance_scale=icfg.guidance_scale,
+        max_new_tokens=icfg.max_new_tokens,
+    )
+    if icfg.do_sample:
+        kw["temperature"] = icfg.temperature
+        kw["top_k"] = icfg.top_k
+        kw["top_p"] = icfg.top_p
+
+    if preset:
+        p = icfg.presets.get(preset)
+        if not p:
+            console.error(
+                f"Unknown preset {preset!r} — available: {', '.join(sorted(icfg.presets))}"
+            )
+            raise KeyError(preset)
+        kw["do_sample"] = True
+        kw["guidance_scale"] = float(p.get("guidance_scale", kw["guidance_scale"]))
+        if "temperature" in p:
+            kw["temperature"] = float(p["temperature"])
+        if "top_k" in p:
+            kw["top_k"] = int(p["top_k"])
+        if "top_p" in p:
+            kw["top_p"] = float(p["top_p"])
+    return kw
+
+
+def _conditioning_audio(model, path: Path, device: str):
+    """Load + resample a conditioning clip to the model's audio rate -> [1, 1, T]"""
+    import librosa
+    import numpy as np
+    import soundfile as sf
+    import torch
+
+    sr_target = getattr(model.config.audio_encoder, "sampling_rate", None) or 32000
+    audio, sr = sf.read(str(path))
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    audio = audio.astype(np.float32)
+    if sr != sr_target:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=sr_target)
+    return torch.from_numpy(audio)[None, None].to(device)  # [batch, channels, samples]
+
+
+def _clap_score(cfg: Config, path: Path, text: str) -> Optional[float]:
+    """CLAP similarity between a wav and the negative text (None if disabled/failed)."""
+    if not cfg.clap.enabled:
+        return None
+    from .similarity import score
+
+    try:
+        return score(cfg, path, text)
+    except Exception as exc:  # noqa: BLE001 - negative scoring must not kill generation
+        console.warn(f"CLAP negative scoring failed: {exc}")
+        return None
+
+
+def _gen_audio(
+    cfg: Config,
+    icfg: InferenceCfg,
+    processor,
+    model,
+    device: str,
+    prompt: str,
+    seed: Optional[int],
+    gen_kwargs: Dict[str, Any],
+    input_values=None,
+) -> Tuple[Any, int, str]:
+    """Run model.generate once, with MPS->CPU fallback. Returns (audio, sr, device)."""
+    import torch
+
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    inputs = processor(text=[prompt], padding=True, return_tensors="pt").to(device)
+    if input_values is not None:
+        inputs["input_values"] = input_values
+
+    console.info(f"Generating: {prompt!r} (device={device})")
+    try:
+        with torch.inference_mode():
+            out = model.generate(**inputs, **gen_kwargs)
+    except (RuntimeError, NotImplementedError) as exc:
+        if str(device) != "cpu":
+            console.warn(f"{device} failed ({exc}); retrying on CPU")
+            del model
+            icfg.device = "cpu"
+            processor, model, device = load_model(icfg)
+            inputs = processor(text=[prompt], padding=True, return_tensors="pt").to(device)
+            if input_values is not None:
+                inputs["input_values"] = input_values.to(device)
+            with torch.inference_mode():
+                out = model.generate(**inputs, **gen_kwargs)
+        else:
+            raise
+
+    audio = _extract_audio(out)[0].cpu().numpy()
+    return audio, _sample_rate(model), device
+
+
 def generate(
     cfg: Config,
     prompt: str,
@@ -73,8 +193,15 @@ def generate(
     processor=None,
     model=None,
     device: Optional[str] = None,
+    # -- Phase 5 (#33-#39) --
+    negative_prompt: Optional[str] = None,
+    negative_retries: Optional[int] = None,
+    target_seconds: Optional[float] = None,
+    continue_from: Optional[Path] = None,
+    melody_from: Optional[Path] = None,
+    preset: Optional[str] = None,
+    manifest: bool = True,
 ) -> dict:
-    import torch
     import soundfile as sf
 
     icfg = cfg.inference
@@ -84,44 +211,65 @@ def generate(
     assert processor is not None and model is not None
 
     if seed is not None:
-        torch.manual_seed(seed)
         icfg.seed = seed
 
-    inputs = processor(
-        text=[prompt], padding=True, return_tensors="pt"
-    ).to(device)
+    gen_kwargs = _sampling_kwargs(icfg, preset=preset or icfg.preset)
+    if target_seconds is None:
+        target_seconds = icfg.target_seconds
+    if target_seconds:
+        gen_kwargs["max_new_tokens"] = max(8, int(target_seconds * TOKENS_PER_SECOND))
 
-    gen_kwargs = dict(
-        do_sample=icfg.do_sample,
-        guidance_scale=icfg.guidance_scale,
-        max_new_tokens=icfg.max_new_tokens,
-    )
-    if icfg.do_sample:
-        gen_kwargs["temperature"] = icfg.temperature
-        gen_kwargs["top_k"] = icfg.top_k
+    # conditioning (#35 continuation / #36 melody)
+    conditioning_kind = None
+    cond_path: Optional[Path] = None
+    if continue_from or melody_from:
+        if continue_from and melody_from:
+            console.error("Provide only one of --continue-from / --melody-from.")
+            return {}
+        cond_path = Path(continue_from or melody_from).resolve()
+        conditioning_kind = "melody" if melody_from else "continuation"
+        if melody_from and "musicgen-melody" not in icfg.model_name:
+            console.warn(
+                "--melody-from is intended for facebook/musicgen-melody; "
+                "with other models it behaves like continuation."
+            )
+        input_values = _conditioning_audio(model, cond_path, device)
+    else:
+        input_values = None
 
-    console.info(f"Generating: {prompt!r} (device={device})")
-    try:
-        with torch.inference_mode():
-            out = model.generate(**inputs, **gen_kwargs)
-    except (RuntimeError, NotImplementedError) as exc:
-        if loaded and str(device) != "cpu":
-            console.warn(f"{device} failed ({exc}); retrying on CPU")
-            del model
-            icfg.device = "cpu"
-            processor, model, device = load_model(icfg)
-            inputs = processor(text=[prompt], padding=True, return_tensors="pt").to(device)
-            with torch.inference_mode():
-                out = model.generate(**inputs, **gen_kwargs)
-        else:
-            raise
-
-    audio = _extract_audio(out)[0].cpu().numpy()
-    sr = _sample_rate(model)
+    neg = negative_prompt if negative_prompt is not None else (icfg.negative_prompt or None)
+    retries = negative_retries if negative_retries is not None else icfg.negative_retries
 
     out_dir = Path(out_dir) if out_dir else cfg.project_root / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     slug = sanitize_slug(name or prompt[:40])
+
+    # -- generation loop with negative-prompt retries (#33) ------------------
+    audio = None
+    neg_score: Optional[float] = None
+    violation = False
+    attempts = 0
+    while True:
+        attempts += 1
+        audio, sr, device = _gen_audio(
+            cfg, icfg, processor, model, device, prompt, seed, gen_kwargs, input_values
+        )
+        if not neg:
+            break
+        tmp = out_dir / f".negcheck_{now_stamp()}.wav"
+        sf.write(tmp, audio.T, sr)
+        neg_score = _clap_score(cfg, tmp, neg)
+        tmp.unlink(missing_ok=True)
+        violation = neg_score is not None and neg_score >= icfg.negative_threshold
+        if not violation or attempts > retries:
+            break
+        console.warn(
+            f"Negative-prompt violation (CLAP {neg_score:.3f} >= {icfg.negative_threshold}); "
+            f"retrying ({attempts}/{retries + 1})"
+        )
+        if seed is not None:
+            seed += 1
+
     out_path = out_dir / f"{slug}_{now_stamp()}.wav"
     sf.write(out_path, audio.T, sr)
 
@@ -133,10 +281,49 @@ def generate(
         "sample_rate": sr,
         "duration": round(audio.shape[-1] / sr, 3),
         "shape": list(audio.shape),
+        # -- Phase 5 --
+        "preset": preset or icfg.preset or None,
+        "max_new_tokens": gen_kwargs["max_new_tokens"],
+        "target_seconds": round(target_seconds, 3) if target_seconds else None,
+        "conditioned_on": str(cond_path) if cond_path else None,
+        "conditioning_kind": conditioning_kind,
+        "negative_prompt": neg,
+        "negative_clap": round(neg_score, 4) if neg_score is not None else None,
+        "negative_violation": violation if neg else None,
+        "attempts": attempts,
     }
     console.ok(f"Saved {out_path} ({result['duration']}s)")
+    if neg:
+        console.info(
+            f"negative CLAP {result['negative_clap']} "
+            f"({'violation' if violation else 'clean'}, {attempts} attempt(s))"
+        )
+
+    if manifest:
+        from .reproduce import capture_run
+
+        capture_run(
+            cfg,
+            "inference",
+            extra={
+                "prompt": prompt,
+                "seed": seed,
+                "preset": result["preset"],
+                "max_new_tokens": gen_kwargs["max_new_tokens"],
+                "target_seconds": result["target_seconds"],
+                "conditioned_on": result["conditioned_on"],
+                "conditioning_kind": conditioning_kind,
+                "negative_prompt": neg,
+                "negative_violation": violation if neg else None,
+                "attempts": attempts,
+                "duration": result["duration"],
+            },
+        )
+
     if loaded:
         del model
+        import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     return result
@@ -144,18 +331,32 @@ def generate(
 
 def generate_batch(
     cfg: Config,
-    prompts: list[str],
+    prompts: List[Any],
     out_dir: Optional[Path] = None,
     seed: Optional[int] = None,
-) -> list[dict]:
+) -> List[dict]:
+    """Batch generation over plain prompts or JSONL items with per-item options (#34)."""
+    items: List[dict] = [p if isinstance(p, dict) else {"prompt": p} for p in prompts]
     processor, model, device = load_model(cfg.inference)
     results = []
-    for i, prompt in enumerate(prompts):
+    for i, it in enumerate(items):
+        s = it.get("seed", seed + i if seed is not None else None)
         results.append(
             generate(
-                cfg, prompt, out_dir=out_dir, name=f"batch_{i:03d}",
-                seed=seed + i if seed is not None else None,
-                processor=processor, model=model, device=device,
+                cfg,
+                it["prompt"],
+                out_dir=out_dir,
+                name=f"batch_{i:03d}",
+                seed=s,
+                processor=processor,
+                model=model,
+                device=device,
+                negative_prompt=it.get("negative_prompt"),
+                negative_retries=it.get("negative_retries"),
+                target_seconds=it.get("target_seconds"),
+                continue_from=Path(it["continue_from"]) if it.get("continue_from") else None,
+                melody_from=Path(it["melody_from"]) if it.get("melody_from") else None,
+                preset=it.get("preset"),
             )
         )
     del model

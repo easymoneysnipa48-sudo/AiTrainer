@@ -60,7 +60,21 @@ class InferenceCfg:
     max_new_tokens: int = 256
     temperature: float = 1.0
     top_k: int = 250
+    top_p: float = 1.0
     seed: Optional[int] = None
+    # -- Phase 5 (#33-#39) --
+    preset: str = ""                 # name of a sampling preset (#37)
+    presets: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "standard": {"temperature": 1.0, "top_k": 250, "top_p": 1.0, "guidance_scale": 3.0},
+            "creative": {"temperature": 1.2, "top_k": 400, "top_p": 0.98, "guidance_scale": 2.0},
+            "precise": {"temperature": 0.7, "top_k": 120, "top_p": 0.95, "guidance_scale": 4.5},
+        }
+    )
+    target_seconds: Optional[float] = None  # override max_new_tokens via duration (#39)
+    negative_prompt: str = ""              # CLAP-checked "no X" constraints (#33)
+    negative_threshold: float = 0.25        # CLAP sim above this -> violation
+    negative_retries: int = 0               # auto-regenerate until not violating
 
 
 @dataclass

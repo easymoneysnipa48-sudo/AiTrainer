@@ -257,6 +257,56 @@ eval schema (`checkpoint`, `seed`, `bpm_target`, `detected_bpm`, `clap_score`,
 reviewable CSV + HTML report (summary cards, per-section breakdown, clickable
 audio) with `musictrain report`.
 
+## Generation controls
+
+Phase 5 adds per-run knobs to `musictrain infer`:
+
+```bash
+# #37 sampling presets — one flag instead of raw knobs
+musictrain presets                        # list presets
+musictrain infer --preset creative --prompt "…"
+
+# #39 target duration — derive max_new_tokens from seconds
+musictrain infer --target-seconds 15 --prompt "…"
+
+# #35 continuation — keep going from an existing clip (saves full track)
+musictrain infer --continue-from data/clean/intro.wav --prompt "build into the verse"
+
+# #36 melody conditioning — follow a clip's melody (use facebook/musicgen-melody)
+musictrain infer --melody-from data/clean/hook.wav --model facebook/musicgen-melody --prompt "…"
+
+# #33 negative prompting — CLAP-scored "no X" constraints with auto-retry
+musictrain infer --negative "vocals, riser" --negative-retries 2 --prompt "…"
+
+# #34 batch prompt files — plain lines or JSONL with per-item options
+musictrain infer --prompts-file prompts.jsonl
+#   {"prompt": "…", "seed": 7, "negative_prompt": "heavy drums", "target_seconds": 1.5}
+#   {"prompt": "…", "preset": "creative", "target_seconds": 1.5}
+
+# #38 reproducibility manifest — pin config/vocab/git per run
+musictrain manifest                      # last 5 runs
+musictrain manifest --diff 1 2           # diff the two most recent
+```
+
+Every generation (and each eval run) appends a record to
+`metadata/repro_manifest.jsonl` snapshotting the config, vocabulary version,
+git commit (+dirty flag), model, prompt, and the generation parameters used —
+so an old result can be reproduced or traced exactly.
+
+**How the pieces work**
+
+- **Presets** (`standard`/`creative`/`precise`) override temperature / top-k /
+top-p / guidance as a group; `creative` loosens sampling, `precise` tightens it.
+- **Target seconds** converts at 50 tokens/sec (MusicGen's 32 kHz codec rate).
+- **Continuation & melody** both condition on a clip via transformers'
+`input_values` path (the audio encoder encodes it into codes/chroma);
+continuation writes the full track (conditioning audio + new audio) so you can
+chain sections end-to-end.
+- **Negative prompting** has no native MusicGen support, so it's enforced
+post-hoc: the generated audio is CLAP-scored against the negative text and
+flagged/re-generated when similarity ≥ `inference.negative_threshold` (0.25).
+`negative_retries` auto-regenerates with a new seed until clean.
+
 ## CI
 
 GitHub Actions runs a fast smoke test (config, eval-set generation, label

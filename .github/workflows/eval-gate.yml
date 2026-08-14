@@ -1,0 +1,52 @@
+name: Eval Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python deps (minimal)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --no-deps
+          pip install numpy scipy soundfile librosa pyyaml jsonlines pytest
+
+      - name: Run full unit test suite
+        run: python -m pytest -q
+
+  gate:
+    runs-on: ubuntu-latest
+    needs: tests
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps (minimal)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --no-deps
+          pip install numpy scipy pyyaml
+
+      - name: Run eval regression gate on fixtures
+        run: python .github/scripts/run_gate.py

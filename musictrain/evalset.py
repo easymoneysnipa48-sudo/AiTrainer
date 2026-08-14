@@ -292,6 +292,7 @@ def run_eval(
     seeds: int = 1,
     progress: Optional[Callable[[int, int], None]] = None,
     cancel: Optional[Callable[[], bool]] = None,
+    incremental: bool = False,
 ) -> List[dict]:
     from .evaluate import check
     from .experiments import log_eval, log_inference
@@ -310,6 +311,34 @@ def run_eval(
             return []
     if limit:
         prompts = prompts[:limit]
+
+    # -- Advanced #49: incremental eval ----------------------------------
+    # Keep already-passing rows for this checkpoint; re-run only prompts that
+    # failed, rejected, or are new. Existing rows are preserved on write.
+    kept: List[dict] = []
+    if incremental:
+        from .report import load_results
+
+        existing = load_results(cfg.project_root)
+        passed = {
+            (r.get("checkpoint"), r.get("prompt"))
+            for r in existing
+            if r.get("status") == "ok"
+        }
+        kept = [r for r in existing if (r.get("checkpoint"), r.get("prompt")) in passed]
+        before = len(prompts)
+        prompts = [
+            p
+            for p in prompts
+            if (cfg.inference.model_name, p["description"]) not in passed
+        ]
+        console.info(
+            f"Incremental: {len(kept)} passed row(s) kept, "
+            f"re-running {len(prompts)} of {before} prompt(s)"
+        )
+        if not prompts:
+            console.ok("Nothing to re-run — all prompts already pass for this checkpoint.")
+            return kept
 
     out_dir = Path(out_dir) if out_dir else cfg.project_root / "outputs" / "eval"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -377,13 +406,14 @@ def run_eval(
 
     out = cfg.project_root / "metadata" / "eval_results.jsonl"
     with jsonlines.open(out, mode="w") as w:
-        for r in results:
+        for r in (kept + results) if incremental else results:
             w.write(r)
 
     ok = sum(1 for r in results if r.get("status") == "ok")
+    total_written = len(kept) + len(results) if incremental else len(results)
     console.ok(
-        f"Eval complete: {len(results)} prompts -> {out.relative_to(cfg.project_root)} "
-        f"({ok} BPM in-tolerance by majority)"
+        f"Eval complete: {total_written} prompts -> {out.relative_to(cfg.project_root)} "
+        f"({ok} BPM in-tolerance by majority, {len(kept)} kept from prior runs)"
     )
 
     from .reproduce import capture_run

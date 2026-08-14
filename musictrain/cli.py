@@ -410,7 +410,14 @@ def cmd_eval(args) -> int:
     cfg = _build_config(args)
     if args.no_clap:
         cfg.clap.enabled = False
-    run_eval(cfg, limit=args.limit, check_bpm=not args.no_check, section=args.section, seeds=args.seeds)
+    run_eval(
+        cfg,
+        limit=args.limit,
+        check_bpm=not args.no_check,
+        section=args.section,
+        seeds=args.seeds,
+        incremental=getattr(args, "incremental", False),
+    )
     return 0
 
 
@@ -791,6 +798,99 @@ def cmd_early_stop(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    from .server import serve
+
+    cfg = _build_config(args)
+    return serve(cfg, port=args.port)
+
+
+def cmd_register(args) -> int:
+    from .registry_ml import register_model
+
+    cfg = _build_config(args)
+    register_model(cfg, args.checkpoint, stage=args.stage)
+    return 0
+
+
+def cmd_models(args) -> int:
+    from .registry_ml import list_models
+
+    cfg = _build_config(args)
+    models = list_models(cfg)
+    if not models:
+        console.info("No registered models yet — run `musictrain register`.")
+        return 0
+    for m in models:
+        console.info(f"{m['name']}")
+        for v in m["versions"]:
+            console.info(f"  v{v['version']} [{v['stage']}] run {v['run_id'][:8]} ({v['status']})")
+    return 0
+
+
+def cmd_stage(args) -> int:
+    from .registry_ml import transition
+
+    cfg = _build_config(args)
+    if not transition(cfg, args.name, args.version, args.stage):
+        return 1
+    return 0
+
+
+def cmd_export_eval(args) -> int:
+    from .telemetry import export_wandb
+
+    cfg = _build_config(args)
+    export_wandb(cfg, project=args.project)
+    return 0
+
+
+def cmd_runlog(args) -> int:
+    from .telemetry import read_runlog
+
+    cfg = _build_config(args)
+    rows = read_runlog(cfg.project_root, event=args.event, limit=args.limit)
+    if not rows:
+        console.info("No runlog entries.")
+        return 0
+    for r in rows:
+        console.info(json.dumps(r))
+    return 0
+
+
+def cmd_alert(args) -> int:
+    from .alerts import alert
+
+    cfg = _build_config(args)
+    alert(
+        cfg,
+        min_clap=args.min_clap,
+        max_abs_deviation=args.max_dev,
+        min_ok_pct=args.min_ok,
+        slack_webhook=args.slack_webhook or "",
+        smtp_host=args.smtp_host or "",
+        smtp_user=args.smtp_user or "",
+        smtp_password=args.smtp_password or "",
+        smtp_to=args.smtp_to or "",
+    )
+    return 0
+
+
+def cmd_cost(args) -> int:
+    from .cost import estimate, log_cost, cost_summary
+
+    cfg = _build_config(args)
+    if args.estimate:
+        est = estimate(args.estimate, args.clips, tokens_per_clip=args.tokens)
+        console.info(json.dumps(est, indent=2))
+        return 0
+    log_cost(cfg, args.task, args.model, args.clips, tokens_per_clip=args.tokens,
+             n_epochs=args.epochs, lora_rank=args.lora)
+    summary = cost_summary(cfg)
+    console.info(f"Total: {summary['total_kwh']} kWh across {summary['runs']} run(s)")
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .experiments import launch_ui
 
@@ -1016,6 +1116,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--seeds", type=int, default=1, help="Seeds per prompt (e.g. 3) for majority verdicts")
     sp.add_argument("--no-check", action="store_true", help="Skip BPM post-check")
     sp.add_argument("--no-clap", action="store_true", help="Skip CLAP prompt-adherence scoring")
+    sp.add_argument("--incremental", action="store_true",
+                    help="Keep passed rows, re-run only failed/new prompts (advanced #49)")
     sp.set_defaults(func=cmd_eval)
 
     # difficulty (advanced #6-#9)
@@ -1319,6 +1421,70 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--patience", type=int, default=3)
     sp.add_argument("--min-delta", type=float, default=0.005)
     sp.set_defaults(func=cmd_early_stop)
+
+    # serve (FastAPI)
+    sp = sub.add_parser("serve", help="Launch the FastAPI REST backend (#41/#42)")
+    add_common(sp)
+    sp.add_argument("--port", type=int, default=8000)
+    sp.set_defaults(func=cmd_serve)
+
+    # register (MLflow registry)
+    sp = sub.add_parser("register", help="Register a checkpoint in the MLflow model registry")
+    add_common(sp)
+    sp.add_argument("--checkpoint", required=True, help="Checkpoint dir name in checkpoints/")
+    sp.add_argument("--stage", default="None", help="None | Staging | Production | Archived")
+    sp.set_defaults(func=cmd_register)
+
+    # models
+    sp = sub.add_parser("models", help="List registered MLflow models + stages")
+    add_common(sp)
+    sp.set_defaults(func=cmd_models)
+
+    # stage
+    sp = sub.add_parser("stage", help="Move a model version between stages")
+    add_common(sp)
+    sp.add_argument("--name", required=True, help="Registered model name")
+    sp.add_argument("--version", type=int, required=True)
+    sp.add_argument("--stage", required=True, help="None | Staging | Production | Archived")
+    sp.set_defaults(func=cmd_stage)
+
+    # export-eval
+    sp = sub.add_parser("export-eval", help="Push eval results to W&B (or CSV fallback) (#45)")
+    add_common(sp)
+    sp.add_argument("--project", default=None, help="W&B project name")
+    sp.set_defaults(func=cmd_export_eval)
+
+    # runlog
+    sp = sub.add_parser("runlog", help="Tail structured JSON run log (#46)")
+    add_common(sp)
+    sp.add_argument("--event", default=None, help="Filter by event type")
+    sp.add_argument("--limit", type=int, default=50)
+    sp.set_defaults(func=cmd_runlog)
+
+    # alert
+    sp = sub.add_parser("alert", help="Alert when eval metrics cross thresholds (#47)")
+    add_common(sp)
+    sp.add_argument("--min-clap", type=float, default=0.30)
+    sp.add_argument("--max-dev", type=float, default=0.20)
+    sp.add_argument("--min-ok", type=float, default=0.5)
+    sp.add_argument("--slack-webhook", default="")
+    sp.add_argument("--smtp-host", default="")
+    sp.add_argument("--smtp-user", default="")
+    sp.add_argument("--smtp-password", default="")
+    sp.add_argument("--smtp-to", default="")
+    sp.set_defaults(func=cmd_alert)
+
+    # cost
+    sp = sub.add_parser("cost", help="Estimate + log run cost (#48)")
+    add_common(sp)
+    sp.add_argument("--estimate", default="", help="Model name to estimate only (no log)")
+    sp.add_argument("--task", default="inference", help="Task label for the log")
+    sp.add_argument("--model", default="musicgen-small")
+    sp.add_argument("--clips", type=int, default=44, help="Number of clips")
+    sp.add_argument("--tokens", type=int, default=256, help="Tokens per clip")
+    sp.add_argument("--epochs", type=int, default=0)
+    sp.add_argument("--lora", type=int, default=0, help="LoRA rank if fine-tuning")
+    sp.set_defaults(func=cmd_cost)
 
     # ui (MLflow)
     sp = sub.add_parser("ui", help="Launch the MLflow tracking UI")

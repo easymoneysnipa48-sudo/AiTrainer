@@ -64,6 +64,96 @@ def wilcoxon(x: np.ndarray, y: np.ndarray) -> Tuple[Optional[float], Optional[fl
         return None, None
 
 
+# --------------------------------------------------------------------------- #
+# Advanced #3 — bootstrap confidence intervals
+# --------------------------------------------------------------------------- #
+def bootstrap_ci(x: np.ndarray, y: np.ndarray, n_boot: int = 2000,
+                 seed: int = 0) -> Tuple[float, float, float]:
+    """Percentile bootstrap 95% CI for mean(y - x). Returns (lo, hi, mean)."""
+    rng = np.random.default_rng(seed)
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) < 3 or len(y) < 3:
+        return float(np.nan), float(np.nan), float(np.nan)
+    diffs = np.empty(n_boot)
+    for i in range(n_boot):
+        xi = x[rng.integers(0, len(x), len(x))]
+        yi = y[rng.integers(0, len(y), len(y))]
+        diffs[i] = yi.mean() - xi.mean()
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    return round(float(lo), 4), round(float(hi), 4), round(float(diffs.mean()), 4)
+
+
+# --------------------------------------------------------------------------- #
+# Advanced #4 — Bayesian A/B (conjugate normal-normal on the pair differences)
+# --------------------------------------------------------------------------- #
+def bayesian_ab(x: np.ndarray, y: np.ndarray, prior_prec: float = 1e-3) -> dict:
+    """Posterior over the mean pair-difference with a flat normal prior.
+
+    Returns the posterior mean/sd and P(diff > 0) — the probability that B is
+    better than A on this metric (in the raw diff direction, so callers
+    should flip for "higher is better" metrics).
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    d = y - x
+    n = len(d)
+    if n < 2:
+        return {"n": n, "p_b_over_a": None, "post_mean": None, "post_sd": None}
+    s2 = d.var(ddof=1)
+    post_prec = prior_prec + n / max(s2, 1e-12)
+    post_mean = (n / max(s2, 1e-12)) * d.mean() / post_prec
+    post_sd = np.sqrt(1.0 / post_prec)
+    from scipy.stats import norm
+
+    p = norm.cdf(0.0, loc=post_mean, scale=post_sd)  # P(diff <= 0)
+    return {
+        "n": n,
+        "p_b_over_a": round(float(1.0 - p), 4),
+        "post_mean": round(float(post_mean), 4),
+        "post_sd": round(float(post_sd), 4),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Advanced #5 — fixed-effects meta-analysis across experiments
+# --------------------------------------------------------------------------- #
+def meta_analyze(studies: List[dict]) -> dict:
+    """Inverse-variance pooled delta across independent experiments.
+
+    Each study: {"delta": float, "se": float or None, "label": str}. When a
+    study lacks a standard error it is excluded from pooling (reported as
+    such). Returns the pooled delta, its SE, z and a two-sided p-value.
+    """
+    from scipy.stats import norm
+
+    deltas, ses, labels = [], [], []
+    for s in studies:
+        se = s.get("se")
+        if se is None or not np.isfinite(se) or se <= 0 or s.get("delta") is None:
+            continue
+        deltas.append(float(s["delta"]))
+        ses.append(float(se))
+        labels.append(s.get("label", "?"))
+    if not deltas:
+        return {"pooled_delta": None, "se": None, "z": None, "p_value": None,
+                "n_studies": len(studies), "n_pooled": 0}
+    w = [1.0 / se2 for se2 in ses]
+    pooled = sum(d * wi for d, wi in zip(deltas, w)) / sum(w)
+    se_pooled = np.sqrt(1.0 / sum(w))
+    z = pooled / se_pooled
+    p = 2.0 * (1.0 - norm.cdf(abs(z)))
+    return {
+        "pooled_delta": round(float(pooled), 4),
+        "se": round(float(se_pooled), 4),
+        "z": round(float(z), 4),
+        "p_value": round(float(p), 4),
+        "n_studies": len(studies),
+        "n_pooled": len(deltas),
+        "pooled_labels": labels,
+    }
+
+
 def _verdict(p: Optional[float], alpha: float, delta_mean: float) -> str:
     if p is None:
         return "insufficient data"
@@ -92,6 +182,8 @@ def compare(cfg: Config, a_rows: List[dict], b_rows: List[dict],
     ca, cb = _metric_pairs(a_rows, b_rows, "clap_score")
     if len(ca):
         stat, p = wilcoxon(ca, cb)
+        lo, hi, boot_mean = bootstrap_ci(ca, cb)
+        bay = bayesian_ab(ca, cb)  # P(B > A) directly (raw diff direction)
         out["metrics"]["clap_score"] = {
             "mean_a": round(float(ca.mean()), 4),
             "mean_b": round(float(cb.mean()), 4),
@@ -100,6 +192,9 @@ def compare(cfg: Config, a_rows: List[dict], b_rows: List[dict],
             "statistic": stat,
             "p_value": round(p, 4) if p is not None else None,
             "verdict": _verdict(p, alpha, -(cb.mean() - ca.mean())),
+            "bootstrap_95ci": [lo, hi],
+            "bootstrap_mean": boot_mean,
+            "bayesian": bay,
         }
 
     # |deviation|: lower is better -> positive mean delta = improvement
@@ -107,6 +202,9 @@ def compare(cfg: Config, a_rows: List[dict], b_rows: List[dict],
     if len(da):
         aa, ab = np.abs(da), np.abs(db)
         stat, p = wilcoxon(aa, ab)
+        lo, hi, boot_mean = bootstrap_ci(aa, ab)
+        bay = bayesian_ab(aa, ab)  # raw diff = B - A; lower is better -> flip
+        bay = {**bay, "p_b_over_a": round(1.0 - bay["p_b_over_a"], 4) if bay["p_b_over_a"] is not None else None}
         out["metrics"]["abs_deviation"] = {
             "mean_a": round(float(aa.mean()), 4),
             "mean_b": round(float(ab.mean()), 4),
@@ -115,6 +213,9 @@ def compare(cfg: Config, a_rows: List[dict], b_rows: List[dict],
             "statistic": stat,
             "p_value": round(p, 4) if p is not None else None,
             "verdict": _verdict(p, alpha, ab.mean() - aa.mean()),
+            "bootstrap_95ci": [lo, hi],
+            "bootstrap_mean": boot_mean,
+            "bayesian": bay,
         }
 
     out["summary"] = (

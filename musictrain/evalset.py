@@ -97,7 +97,48 @@ def _key_slug(key: str) -> str:
     return key.lower().replace(" ", "")
 
 
-def build(root: Path, force: bool = False) -> List[dict]:
+def adversarial_prompts(root: Path, n: int = 10, start_seed: int = 1000) -> List[dict]:
+    """Advanced #10 — deliberately tricky prompts to stress prompt adherence.
+
+    Categories: impossible BPM for the section, conflicting/ambiguous tags,
+    out-of-vocabulary descriptors, and near-empty phrasing. Each carries
+    ``adversarial: true`` so eval/report code can flag them.
+    """
+    traps = [
+        ("full-song", 42, "melodic trap", "A minor", "fast chaotic full song, 42 BPM, breakcore drums, A minor"),
+        ("intro", 220, "ambient", "F# major", "intro, 220 BPM, ambient pads, F# major, breakneck hi-hats"),
+        ("chorus", 55, "melodic trap", "C minor", "chorus, 55 BPM, melodic trap, C minor, no drums, no bass"),
+        ("verse", 96, "orchestral", "B minor", "verse, 96 BPM, orchestral strings, B minor, trap hi-hats, aggressive"),
+        ("bridge", 140, "lofi", "D major", "bridge, 140 BPM, lofi, D major, distorted 808, gentle piano"),
+        ("outro", 200, "gospel", "E minor", "outro, 200 BPM, gospel choir, E minor, half-time feel"),
+        ("pre-chorus", 60, "techno", "G minor", "pre-chorus, 60 BPM, techno, G minor, kick every bar, dreamy pads"),
+        ("chorus", 96, "melodic trap", "A minor", "chorus with absolutely no describable instrumentation, 96 BPM"),
+        ("verse", 140, "melodic trap", "B minor", "blorp glorp zorp splat, 140 BPM, B minor, reverse piano, sidechain everything"),
+        ("full-song", 84, "ambient", "C# minor", "sparse, 84 BPM, C# minor"),
+        ("intro", 70, "melodic trap", "A minor", "intro, 70 BPM, A minor, quiet then extremely loud"),
+        ("chorus", 128, "orchestral", "D minor", "chorus, 128 BPM, D minor, orchestra playing trap rhythms"),
+    ]
+    out: List[dict] = []
+    for i, (section, bpm, genre, key, desc) in enumerate(traps[:n]):
+        out.append(
+            {
+                "id": f"adv_{i:02d}",
+                "section": section,
+                "genre": genre,
+                "bpm": bpm,
+                "key": key,
+                "mood": "",
+                "instruments": "",
+                "energy": 0.5,
+                "seed": start_seed + i,
+                "adversarial": True,
+                "description": desc,
+            }
+        )
+    return out
+
+
+def build(root: Path, force: bool = False, adversarial: int = 0) -> List[dict]:
     prompts: List[dict] = []
     i = 0
     for section, tmpl in SECTIONS.items():
@@ -132,6 +173,11 @@ def build(root: Path, force: bool = False) -> List[dict]:
     if out.exists() and not force:
         console.warn(f"{out.relative_to(root)} exists; use --force to overwrite")
         return load(root)
+
+    if adversarial:
+        adv = adversarial_prompts(root, n=adversarial, start_seed=1000)
+        prompts.extend(adv)
+        console.step(f"Appending {len(adv)} adversarial prompt(s)")
 
     with jsonlines.open(out, mode="w") as w:
         for p in prompts:

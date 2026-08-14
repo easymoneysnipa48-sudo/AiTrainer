@@ -356,7 +356,8 @@ def cmd_evalset(args) -> int:
     from .evalset import build
 
     cfg = _build_config(args)
-    build(cfg.project_root, force=args.force)
+    prompts = build(cfg.project_root, force=args.force, adversarial=getattr(args, "adversarial", 0))
+    console.ok(f"Prompt set: {len(prompts)} prompts ready")
     return 0
 
 
@@ -399,14 +400,43 @@ def cmd_metrics(args) -> int:
         Path(args.ref).resolve(),
         Path(args.gen).resolve(),
         limit=args.limit,
+        fad_kind=args.fad,
     )
     return 0 if record else 1
 
 
 def cmd_significance(args) -> int:
-    from .significance import compare, from_checkpoints, load_results
+    from .significance import compare, from_checkpoints, load_results, meta_analyze
 
     cfg = _build_config(args)
+    if getattr(args, "meta", None):
+        # advanced #5 — combine effect sizes from several experiment JSONs
+        studies = []
+        for p in args.meta:
+            data = json.loads(Path(p).read_text())
+            if isinstance(data, dict) and "delta" in data:
+                data["label"] = p
+                studies.append(data)
+            elif isinstance(data, list):
+                for s in data:
+                    if isinstance(s, dict) and "delta" in s:
+                        s["label"] = p
+                        studies.append(s)
+        if not studies:
+            console.error("No studies with delta/se found in --meta files.")
+            return 1
+        out = meta_analyze(studies)
+        if out.get("pooled_delta") is not None:
+            console.ok(
+                f"Meta-analysis: pooled delta = {out['pooled_delta']} "
+                f"(se {out['se']}, z {out['z']}, p {out['p_value']}) "
+                f"across {out['n_pooled']}/{out['n_studies']} studies"
+            )
+        path = cfg.project_root / "metadata" / "metaanalysis.json"
+        path.write_text(json.dumps(out, indent=2))
+        console.ok(f"Meta-analysis -> {path.relative_to(cfg.project_root)}")
+        return 0
+
     if args.checkpoint_a and args.checkpoint_b:
         out = from_checkpoints(cfg, args.checkpoint_a, args.checkpoint_b)
     else:
@@ -420,6 +450,13 @@ def cmd_significance(args) -> int:
         return 1
     console.ok(out.get("summary", ""))
     return 0
+
+
+def cmd_difficulty(args) -> int:
+    from .difficulty import run
+
+    cfg = _build_config(args)
+    return 0 if run(cfg.project_root, cfg) else 1
 
 
 def cmd_leaderboard(args) -> int:
@@ -732,6 +769,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("evalset", help="Generate the fixed evaluation prompt set")
     add_common(sp)
     sp.add_argument("--force", action="store_true", help="Overwrite existing set")
+    sp.add_argument("--adversarial", type=int, default=0,
+                    help="Append N adversarial (tricky) prompts (advanced #10)")
     sp.set_defaults(func=cmd_evalset)
 
     # eval
@@ -743,6 +782,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-check", action="store_true", help="Skip BPM post-check")
     sp.add_argument("--no-clap", action="store_true", help="Skip CLAP prompt-adherence scoring")
     sp.set_defaults(func=cmd_eval)
+
+    # difficulty (advanced #6-#9)
+    sp = sub.add_parser(
+        "difficulty",
+        help="Prompt difficulty, section x BPM interaction, CLAP z-scores, threshold calibration",
+    )
+    add_common(sp)
+    sp.set_defaults(func=cmd_difficulty)
 
     # report
     sp = sub.add_parser("report", help="Export eval results to CSV + HTML")
@@ -758,6 +805,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ref", required=True, help="Reference audio dir (e.g. data/clean)")
     sp.add_argument("--gen", required=True, help="Generated audio dir (e.g. outputs/eval)")
     sp.add_argument("--limit", type=int, default=0, help="Limit files per set")
+    sp.add_argument("--fad", choices=["clap", "vggish"], default="clap",
+                    help="FAD embedding: clap (default) or vggish via fadtk (advanced #1)")
     sp.set_defaults(func=cmd_metrics)
 
     # significance
@@ -770,6 +819,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--b", default=None, help="Second eval_results.jsonl")
     sp.add_argument("--checkpoint-a", default=None, help="Checkpoint name in eval_results.jsonl")
     sp.add_argument("--checkpoint-b", default=None, help="Checkpoint name in eval_results.jsonl")
+    sp.add_argument("--meta", nargs="*", default=None,
+                    help="JSON file(s) with {delta, se} per study for meta-analysis (advanced #5)")
     sp.set_defaults(func=cmd_significance)
 
     # leaderboard

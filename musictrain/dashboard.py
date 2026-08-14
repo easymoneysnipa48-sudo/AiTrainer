@@ -1228,6 +1228,31 @@ def page_compare() -> None:
 
     with st.spinner("Loading stable verdicts…"):
         _stable_verdicts(cfg)
+
+    # advanced #6-#9 — prompt difficulty + calibration, read from CLI output
+    diff = _read_json("prompt_difficulty.json")
+    if diff:
+        with st.expander("🎯 Prompt difficulty & calibration (run `musictrain difficulty`)", expanded=False):
+            cal = diff.get("calibration", {})
+            if cal.get("suggested_max_abs_deviation") is not None:
+                a1, a2, a3 = st.columns(3)
+                a1.metric("Suggested max |dev|", cal["suggested_max_abs_deviation"],
+                          help=f"rejects {cal.get('would_reject_dev')} prompts")
+                a2.metric("Suggested min CLAP", cal["suggested_min_clap_score"],
+                          help=f"rejects {cal.get('would_reject_clap')} prompts")
+                a3.metric("Prompts", cal["n_prompts"])
+            hard = diff.get("difficulty", [])[:8]
+            if hard:
+                st.caption("Hardest prompts")
+                st.dataframe(
+                    pd.DataFrame(hard)[["difficulty", "section", "bpm_target", "status", "prompt"]],
+                    width="stretch", hide_index=True,
+                )
+            inter = diff.get("section_bpm_interaction")
+            if inter:
+                st.caption("Section × BPM interaction (bpm_dev_corr: >0 means faster BPM drifts more)")
+                st.dataframe(pd.DataFrame(inter), width="stretch", hide_index=True)
+
     st.markdown("---")
 
     from musictrain.experiments import search_runs

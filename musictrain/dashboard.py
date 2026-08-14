@@ -514,6 +514,134 @@ def page_labels() -> None:
                 st.dataframe(pd.DataFrame(dis), hide_index=True, use_container_width=True)
 
 
+def page_leaderboard() -> None:
+    """Checkpoint leaderboard from eval results (#45)."""
+    st.header("🏆 Leaderboard")
+    st.caption(
+        "Ranks checkpoints by adherence (CLAP), BPM fidelity, verdict share, "
+        "and mean human rating (#42). Run `musictrain leaderboard` to refresh."
+    )
+
+    cfg = load_cfg()
+    lb = _read_json("leaderboard.json")
+    if st.button("Rebuild leaderboard", type="primary"):
+        from musictrain.leaderboard import build
+
+        with st.spinner("Ranking checkpoints…"):
+            build(cfg)
+        st.rerun()
+
+    if not lb:
+        st.info("No leaderboard yet — run `musictrain eval` then `musictrain leaderboard`.")
+        return
+
+    entries = lb.get("leaderboard", [])
+    st.caption(f"{lb.get('n_checkpoints')} checkpoints compared")
+
+    rows = [
+        {
+            "rank": e["rank"],
+            "checkpoint": e["checkpoint"],
+            "score": e["score"],
+            "ok %": e["ok_pct"],
+            "mean CLAP": e["mean_clap"],
+            "mean |dev|": e["mean_abs_deviation"],
+            "mean human rating": e["mean_human_rating"],
+            "runs": e["runs"],
+        }
+        for e in entries
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.subheader("Per-tag CLAP adherence (#46)")
+    tag_rows = []
+    for e in entries:
+        for tag, val in (e.get("clap_per_tag") or {}).items():
+            if val is not None:
+                tag_rows.append({"checkpoint": e["checkpoint"], "tag": tag, "CLAP": val})
+    if tag_rows:
+        st.bar_chart(pd.DataFrame(tag_rows).pivot(index="tag", columns="checkpoint", values="CLAP"))
+    else:
+        st.info("No per-tag scores — run eval with `eval.per_tag_clap: true`.")
+
+
+def page_listening() -> None:
+    """Human listening + rating UI (#42) — writes metadata/human_ratings.jsonl."""
+    from musictrain.report import load_results
+
+    st.header("🎧 Human listening")
+    st.caption(
+        "Listen and rate generated clips 1-5. Ratings merge into the leaderboard "
+        "(`musictrain leaderboard`) and the eval report."
+    )
+
+    rows = load_results(ROOT)
+    if not rows:
+        st.info("No eval results yet — run `musictrain eval` first.")
+        return
+
+    ratings_path = ROOT / "metadata" / "human_ratings.jsonl"
+    ratings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if ratings_path.exists():
+        for ln in ratings_path.read_text().splitlines():
+            if ln.strip():
+                r = json.loads(ln)
+                existing[(r["prompt"], r["checkpoint"])] = r
+
+    limit = st.slider("Clips to review", 1, min(len(rows), 50), min(len(rows), 10))
+    idx = st.number_input("Start at #", 0, max(len(rows) - 1, 0), 0, step=1)
+    window = rows[int(idx): int(idx) + int(limit)]
+
+    ratings = {}
+    for i, r in enumerate(window):
+        key = (r["prompt"], r["checkpoint"])
+        prev = existing.get(key, {})
+        with st.container(border=True):
+            st.caption(
+                f"**{r.get('section') or '?'}** · {r.get('bpm_target')} BPM · "
+                f"CLAP {r.get('clap_score')} · dev {r.get('deviation')}"
+            )
+            st.write(r["prompt"])
+            ap = r.get("audio_path")
+            if ap and Path(ap).exists():
+                st.audio(str(ap))
+            else:
+                st.warning("Audio file missing")
+            c1, c2 = st.columns([1, 3])
+            rating = c1.slider(
+                f"Rating {i + 1}", 1, 5, int(prev.get("rating") or 3),
+                key=f"rating_{i}", label_visibility="collapsed",
+            )
+            note = c2.text_input(
+                "Note (optional)", value=prev.get("note", ""),
+                key=f"note_{i}", label_visibility="collapsed",
+            )
+            ratings[key] = {"rating": rating, "note": note}
+
+    if st.button("Save ratings", type="primary"):
+        saved = 0
+        with ratings_path.open("a") as fh:
+            writer = csv.writer(fh, delimiter="\t")
+            for (prompt, checkpoint), rr in ratings.items():
+                if rr["note"] or rr["rating"] != existing.get((prompt, checkpoint), {}).get("rating", 3):
+                    line = json.dumps(
+                        {
+                            "prompt": prompt,
+                            "checkpoint": checkpoint,
+                            "rating": rr["rating"],
+                            "note": rr["note"],
+                        }
+                    )
+                    fh.write(line + "\n")
+                    saved += 1
+        st.success(f"Saved {saved} rating(s) -> metadata/human_ratings.jsonl")
+        st.rerun()
+
+    st.caption(f"Already rated: {len(existing)} prompt/checkpoint pairs")
+
+
 def page_promptbuilder() -> None:
     """Interactive prompt builder that assembles prompts from the vocabulary (#30)."""
     st.header("🪄 Prompt builder")
@@ -568,6 +696,8 @@ PAGES = {
     "🏷️ Labels": page_labels,
     "📊 Compare": page_compare,
     "🧹 Hygiene": page_hygiene,
+    "🏆 Leaderboard": page_leaderboard,
+    "🎧 Listening": page_listening,
 }
 
 

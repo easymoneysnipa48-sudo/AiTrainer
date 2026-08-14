@@ -65,6 +65,19 @@ def _fmt_num(v, nd: int = 2) -> str:
     return f"{v:.{nd}f}"
 
 
+def _load_human_ratings(root: Path) -> Dict[str, list]:
+    p = root / "metadata" / "human_ratings.jsonl"
+    if not p.exists():
+        return {}
+    out: Dict[str, list] = {}
+    for ln in p.read_text().splitlines():
+        if ln.strip():
+            r = json.loads(ln)
+            if r.get("rating") is not None:
+                out.setdefault(r.get("prompt", ""), []).append(r["rating"])
+    return out
+
+
 def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
     n = len(rows)
     ok = sum(1 for r in rows if r.get("status") == "ok")
@@ -72,6 +85,7 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
     claps = [r["clap_score"] for r in rows if r.get("clap_score") is not None]
     mean_dev = sum(devs) / len(devs) if devs else 0.0
     mean_clap = sum(claps) / len(claps) if claps else 0.0
+    human = _load_human_ratings(path.parent)
 
     by_section: Dict[str, List[int]] = {}
     for r in rows:
@@ -95,6 +109,12 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
         n_seeds = r.get("n_seeds") or 1
         ok_seeds = r.get("ok_seeds")
         seeds_cell = f"{ok_seeds}/{n_seeds}" if ok_seeds is not None else str(n_seeds)
+        ratings = human.get(r.get("prompt", ""), [])
+        rating_cell = _fmt_num(sum(ratings) / len(ratings), 1) if ratings else "—"
+        per_tag = r.get("clap_per_tag") or {}
+        tag_cell = ", ".join(
+            f"{k}:{_fmt_num(v, 2)}" for k, v in sorted(per_tag.items()) if v is not None
+        )
         rows_html.append(
             "<tr>"
             f"<td class='prompt'>{html.escape((r.get('prompt') or '')[:70])}</td>"
@@ -104,8 +124,9 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
             f"<td>{_fmt_num(r.get('detected_bpm'))}</td>"
             f"<td>{_fmt_dev(r.get('deviation'))}</td>"
             f"<td>{_fmt_num(r.get('clap_score'), 3)}</td>"
+            f"<td>{html.escape(tag_cell)}</td>"
             f"<td><span class='badge {badge}'>{html.escape(str(status))}</span></td>"
-            f"<td>{_fmt_num(r.get('human_rating'), 0)}</td>"
+            f"<td>{rating_cell}</td>"
             f"<td>{seeds_cell}</td>"
             f"<td>{audio_cell}</td>"
             "</tr>"
@@ -156,7 +177,7 @@ def _write_html(path: Path, rows: List[dict], cfg: Config) -> None:
 
 <h2>Results</h2>
 <table>
-<tr><th>prompt</th><th>section</th><th>key</th><th>target</th><th>detected</th><th>deviation</th><th>clap</th><th>status</th><th>rating</th><th>seeds</th><th>audio</th></tr>
+<tr><th>prompt</th><th>section</th><th>key</th><th>target</th><th>detected</th><th>deviation</th><th>clap</th><th>per-tag clap</th><th>status</th><th>rating</th><th>seeds</th><th>audio</th></tr>
 {''.join(rows_html)}
 </table>
 </body>

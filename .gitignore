@@ -41,6 +41,10 @@ metadata/label_suggestions.json
 metadata/agreement.json
 metadata/vocab_version.json
 metadata/repro_manifest.jsonl
+metadata/metrics.json
+metadata/significance.json
+metadata/leaderboard.json
+metadata/human_ratings.jsonl
 mlruns/
 mlruns.db
 mlflow.db

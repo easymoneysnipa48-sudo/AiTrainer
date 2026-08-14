@@ -109,3 +109,14 @@ export:
   which: all
   audio_column: true
   max_shard_size: 500MB
+eval:
+  min_clap_score: 0.0
+  max_abs_deviation: 0.2
+  per_tag_clap: true
+  significance_alpha: 0.05
+metrics:
+  sr: 32000
+  n_mels: 64
+  hop_length: 512
+  n_fft: 1024
+  fad_eps: 1.0e-06

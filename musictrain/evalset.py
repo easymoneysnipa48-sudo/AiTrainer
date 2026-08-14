@@ -147,6 +147,26 @@ def load(root: Path) -> List[dict]:
     return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
 
 
+def tag_phrases(prompt: dict) -> dict:
+    """Per-tag text phrases for #46 (per-tag CLAP adherence)."""
+    phrases = {}
+    if prompt.get("section"):
+        phrases["section"] = prompt["section"]
+    if prompt.get("genre"):
+        phrases["genre"] = prompt["genre"]
+    if prompt.get("key"):
+        phrases["key"] = prompt["key"]
+    moods = prompt.get("mood") or []
+    if moods:
+        phrases["mood"] = ", ".join(moods) if isinstance(moods, list) else str(moods)
+    instrs = prompt.get("instruments") or []
+    if instrs:
+        phrases["instruments"] = ", ".join(instrs) if isinstance(instrs, list) else str(instrs)
+    if prompt.get("bpm"):
+        phrases["bpm"] = f"{int(prompt['bpm'])} BPM"
+    return phrases
+
+
 def _aggregate(prompt: dict, seed_records: List[dict], cfg: Config) -> dict:
     import statistics
 
@@ -161,11 +181,44 @@ def _aggregate(prompt: dict, seed_records: List[dict], cfg: Config) -> dict:
     if med_det is not None and target:
         deviation = round((med_det - float(target)) / float(target), 4)
 
+    mean_clap = round(sum(claps) / len(claps), 4) if claps else None
+
+    # -- #43: auto-reject thresholds -------------------------------------
+    reasons: List[str] = []
+    if cfg.eval.min_clap_score > 0 and mean_clap is not None \
+            and mean_clap < cfg.eval.min_clap_score:
+        reasons.append(f"CLAP {mean_clap:.3f} < min {cfg.eval.min_clap_score:.3f}")
+    if cfg.eval.max_abs_deviation > 0 and deviation is not None \
+            and abs(deviation) > cfg.eval.max_abs_deviation:
+        reasons.append(
+            f"|dev| {abs(deviation):.3f} > max {cfg.eval.max_abs_deviation:.3f}"
+        )
+
+    bpm_ok = oks >= (n + 1) // 2
+    status = "ok" if bpm_ok and not reasons else "rejected"
+    notes = f"{oks}/{n} seeds in-tolerance" if n > 1 else ""
+    if reasons:
+        notes = (notes + "; " if notes else "") + "auto-reject: " + ", ".join(reasons)
+
+    # -- #46: per-tag CLAP (mean across seeds) ----------------------------
+    clap_per_tag = None
+    tag_lists = [
+        (r.get("clap_per_tag") or {}) for r in seed_records
+        if r.get("clap_per_tag")
+    ]
+    if tag_lists:
+        keys = sorted({k for t in tag_lists for k in t})
+        clap_per_tag = {}
+        for k in keys:
+            vals = [t[k] for t in tag_lists if k in t]
+            if vals:
+                clap_per_tag[k] = round(sum(vals) / len(vals), 4)
+
     return {
         "experiment_id": cfg.mlflow.experiment_name,
         "checkpoint": cfg.inference.model_name,
         "prompt": prompt["description"],
-        "seed": prompt["seed"],
+        "seed": prompt.get("seed"),
         "n_seeds": n,
         "ok_seeds": oks,
         "section": prompt.get("section"),
@@ -175,10 +228,11 @@ def _aggregate(prompt: dict, seed_records: List[dict], cfg: Config) -> dict:
         "audio_path": seed_records[0]["audio_path"] if seed_records else None,
         "detected_bpm": round(med_det, 2) if med_det is not None else None,
         "deviation": deviation,
-        "clap_score": round(sum(claps) / len(claps), 4) if claps else None,
+        "clap_score": mean_clap,
+        "clap_per_tag": clap_per_tag,
         "human_rating": None,
-        "status": "ok" if oks >= (n + 1) // 2 else "rejected",
-        "notes": f"{oks}/{n} seeds in-tolerance" if n > 1 else "",
+        "status": status,
+        "notes": notes,
         "per_seed": seed_records,
     }
 
@@ -252,6 +306,12 @@ def run_eval(
                 try:
                     clap_score = score(cfg, Path(result["path"]), p["description"])
                     rec["clap_score"] = clap_score
+                    if cfg.eval.per_tag_clap:
+                        from .similarity import score_multi
+
+                        rec["clap_per_tag"] = score_multi(
+                            cfg, Path(result["path"]), tag_phrases(p)
+                        )
                 except Exception as exc:  # noqa: BLE001 - scoring must not break eval
                     console.warn(f"CLAP scoring failed for {p['id']} seed {seed}: {exc}")
             log_inference(cfg, result, clap_score=clap_score)

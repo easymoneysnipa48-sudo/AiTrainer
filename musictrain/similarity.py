@@ -92,3 +92,52 @@ def score(cfg: Config, audio_path: Path, text: str) -> Optional[float]:
 
     sim = float((audio_emb @ text_emb.T)[0, 0].item())
     return round(sim, 4)
+
+
+def score_multi(cfg: Config, audio_path: Path,
+                texts: dict) -> Optional[dict]:
+    """Score one audio file against many texts (#46, per-tag CLAP).
+
+    Encodes the audio once and all texts in a single batch, returning
+    `{label: cosine}` for each entry of `texts`. Labels are preserved so the
+    caller can attribute scores per tag (section, genre, key, …).
+    """
+    if not cfg.clap.enabled or not texts:
+        return None
+    import librosa
+    import soundfile as sf
+    import torch
+
+    fe, tok, model, device = load_clap(cfg.clap.model_name, cfg.clap.device)
+
+    audio, sr = sf.read(str(audio_path))
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    audio = audio.astype(np.float32)
+    if sr != 48000:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=48000)
+        sr = 48000
+
+    labels = list(texts.keys())
+    phrases = [texts[k] for k in labels]
+    audio_inputs = fe(raw_speech=[audio], sampling_rate=sr, return_tensors="pt")
+    text_inputs = tok(phrases, padding=True, return_tensors="pt")
+    audio_inputs = {k: v.to(device) for k, v in audio_inputs.items() if hasattr(v, "to")}
+    text_inputs = {k: v.to(device) for k, v in text_inputs.items() if hasattr(v, "to")}
+
+    with torch.inference_mode():
+        audio_emb = _pooler(
+            model.get_audio_features(
+                input_features=audio_inputs["input_features"],
+                is_longer=audio_inputs.get("is_longer"),
+            )
+        )
+        text_emb = _pooler(
+            model.get_text_features(
+                input_ids=text_inputs["input_ids"],
+                attention_mask=text_inputs["attention_mask"],
+            )
+        )
+
+    sims = (audio_emb @ text_emb.T)[0]
+    return {lab: round(float(sims[i].item()), 4) for i, lab in enumerate(labels)}

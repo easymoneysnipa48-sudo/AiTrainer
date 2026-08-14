@@ -257,6 +257,34 @@ eval schema (`checkpoint`, `seed`, `bpm_target`, `detected_bpm`, `clap_score`,
 reviewable CSV + HTML report (summary cards, per-section breakdown, clickable
 audio) with `musictrain report`.
 
+### Eval & metrics (Phase 6)
+
+```bash
+# #43 auto-reject thresholds — tune in configs/default.yaml under `eval:`
+#   min_clap_score: 0.0      reject prompts whose mean CLAP is too low
+#   max_abs_deviation: 0.20  reject prompts whose |BPM deviation| is too high
+#   per_tag_clap: true       also score each tag phrase separately (#46)
+musictrain eval --seeds 3
+
+# #44 significance — paired Wilcoxon between two result sets / checkpoints
+musictrain significance --a results_old.jsonl --b results_new.jsonl
+musictrain significance --checkpoint-a ckpt-a --checkpoint-b ckpt-b
+
+# #45 leaderboard — rank checkpoints by CLAP + deviation + verdict + human rating
+musictrain leaderboard
+
+# #41 distribution metrics — FAD (on CLAP embeddings) + spectral KL
+musictrain metrics --ref data/clean --gen outputs/eval
+```
+
+With `per_tag_clap` on, each generated clip is scored against its own section,
+genre, key, mood, instruments, and BPM phrases, stored as `clap_per_tag` in the
+results. The HTML report gains a per-tag CLAP column, and the leaderboard shows
+the per-tag breakdown per checkpoint (#46). Human ratings from the 🎧
+**Listening** dashboard page (#42) merge into the leaderboard and report
+(`metadata/human_ratings.jsonl`). The 🏆 **Leaderboard** page renders the
+rankings with a rebuild button.
+
 ## Generation controls
 
 Phase 5 adds per-run knobs to `musictrain infer`:

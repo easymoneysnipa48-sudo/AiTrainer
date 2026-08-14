@@ -390,6 +390,45 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_metrics(args) -> int:
+    from .metrics import compute
+
+    cfg = _build_config(args)
+    record = compute(
+        cfg,
+        Path(args.ref).resolve(),
+        Path(args.gen).resolve(),
+        limit=args.limit,
+    )
+    return 0 if record else 1
+
+
+def cmd_significance(args) -> int:
+    from .significance import compare, from_checkpoints, load_results
+
+    cfg = _build_config(args)
+    if args.checkpoint_a and args.checkpoint_b:
+        out = from_checkpoints(cfg, args.checkpoint_a, args.checkpoint_b)
+    else:
+        a_rows = load_results(Path(args.a).resolve())
+        b_rows = load_results(Path(args.b).resolve())
+        if not a_rows or not b_rows:
+            console.error("Both --a and --b files must contain eval results.")
+            return 1
+        out = compare(cfg, a_rows, b_rows, label_a=args.a, label_b=args.b)
+    if not out:
+        return 1
+    console.ok(out.get("summary", ""))
+    return 0
+
+
+def cmd_leaderboard(args) -> int:
+    from .leaderboard import build
+
+    cfg = _build_config(args)
+    return 0 if build(cfg) else 1
+
+
 def cmd_quality(args) -> int:
     from .audio.quality import quality
 
@@ -709,6 +748,37 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("report", help="Export eval results to CSV + HTML")
     add_common(sp)
     sp.set_defaults(func=cmd_report)
+
+    # metrics
+    sp = sub.add_parser(
+        "metrics",
+        help="FAD (CLAP) + spectral KL between reference and generated audio (#41)",
+    )
+    add_common(sp)
+    sp.add_argument("--ref", required=True, help="Reference audio dir (e.g. data/clean)")
+    sp.add_argument("--gen", required=True, help="Generated audio dir (e.g. outputs/eval)")
+    sp.add_argument("--limit", type=int, default=0, help="Limit files per set")
+    sp.set_defaults(func=cmd_metrics)
+
+    # significance
+    sp = sub.add_parser(
+        "significance",
+        help="Paired significance between two eval result sets (#44)",
+    )
+    add_common(sp)
+    sp.add_argument("--a", default=None, help="First eval_results.jsonl")
+    sp.add_argument("--b", default=None, help="Second eval_results.jsonl")
+    sp.add_argument("--checkpoint-a", default=None, help="Checkpoint name in eval_results.jsonl")
+    sp.add_argument("--checkpoint-b", default=None, help="Checkpoint name in eval_results.jsonl")
+    sp.set_defaults(func=cmd_significance)
+
+    # leaderboard
+    sp = sub.add_parser(
+        "leaderboard",
+        help="Rank checkpoints by adherence + per-tag CLAP (#45)",
+    )
+    add_common(sp)
+    sp.set_defaults(func=cmd_leaderboard)
 
     # quality
     sp = sub.add_parser("quality", help="Score audio quality (bitrate/clipping/silence)")

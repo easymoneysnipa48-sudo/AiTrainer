@@ -153,6 +153,24 @@ class AnalysisCfg:
 
 
 @dataclass
+class EvalCfg:
+    # Phase 6 (#43): auto-reject thresholds applied to eval verdicts.
+    min_clap_score: float = 0.0        # mean CLAP below this -> reject
+    max_abs_deviation: float = 0.20    # |deviation| above this -> reject
+    per_tag_clap: bool = True          # score each tag phrase separately (#46)
+    significance_alpha: float = 0.05   # p-value cutoff for #44 verdicts
+
+
+@dataclass
+class MetricsCfg:
+    sr: int = 32000
+    n_mels: int = 64          # mel bins for spectral KL (#41)
+    hop_length: int = 512
+    n_fft: int = 1024
+    fad_eps: float = 1e-6     # covariance regularization for FAD (#41)
+
+
+@dataclass
 class ExportCfg:
     format: str = "arrow"      # arrow | jsonl | csv (#26)
     which: str = "all"         # train | val | test | all
@@ -178,6 +196,8 @@ class Config:
     stems: StemsCfg = field(default_factory=StemsCfg)
     analysis: AnalysisCfg = field(default_factory=AnalysisCfg)
     export: ExportCfg = field(default_factory=ExportCfg)
+    eval: EvalCfg = field(default_factory=EvalCfg)
+    metrics: MetricsCfg = field(default_factory=MetricsCfg)
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict:

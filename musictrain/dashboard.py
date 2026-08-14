@@ -1034,6 +1034,18 @@ def page_generate() -> None:
         preset = st.selectbox("Preset", ["", "standard", "creative", "precise"], key="gen_preset")
         negative = st.text_input("Negative prompt (CLAP-checked)", value="", key="gen_negative")
 
+    # feature 16 — melody-from-audio conditioning (best with musicgen-melody)
+    melody_file = st.file_uploader(
+        "🎵 Condition on a melody (optional, use musicgen-melody)",
+        type=["wav", "mp3", "flac", "ogg"], key="gen_melody",
+    )
+    melody_path = None
+    if melody_file is not None:
+        tmp = ROOT / "outputs" / f"_melody_in_{melody_file.name}"
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(melody_file.getbuffer())
+        melody_path = tmp
+
     if st.button("Generate", type="primary", key="gen_run"):
         from musictrain.inference import generate
 
@@ -1049,7 +1061,10 @@ def page_generate() -> None:
         t0 = time.monotonic()
 
         def _go():
-            return generate(cfg, prompt, out_dir=ROOT / "outputs", seed=int(seed) or None)
+            return generate(
+                cfg, prompt, out_dir=ROOT / "outputs", seed=int(seed) or None,
+                melody_from=melody_path,
+            )
 
         result = _run_job_cancellable("Generating audio (MPS)", _go)
         if result is None:

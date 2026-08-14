@@ -164,6 +164,33 @@ def calibrate_thresholds(rows: List[dict]) -> dict:
     }
 
 
+def mine_negatives(rows: List[dict], k: int = 10) -> List[dict]:
+    """Advanced #17 — mine the weakest generations per section.
+
+    Lowest-CLAP clips (with their audio paths) are the natural candidates for
+    a hard-negative set (e.g. for contrastive audio-text training).
+    """
+    by_section: Dict[str, List[dict]] = {}
+    for r in rows:
+        if r.get("clap_score") is None:
+            continue
+        by_section.setdefault(r.get("section") or "?", []).append(r)
+    out: List[dict] = []
+    for sec, rs in by_section.items():
+        worst = sorted(rs, key=lambda r: r["clap_score"])[: max(k // max(len(by_section), 1), 1)]
+        for r in worst:
+            out.append(
+                {
+                    "section": sec,
+                    "clap_score": r.get("clap_score"),
+                    "audio_path": r.get("audio_path"),
+                    "prompt": r.get("prompt"),
+                    "candidate_for": "negative set",
+                }
+            )
+    return sorted(out, key=lambda r: r["clap_score"])
+
+
 def run(root: Path, cfg: Config) -> dict:
     """Compute all four analytics and write metadata/prompt_difficulty.json."""
     rows = load_results(root)
@@ -177,6 +204,7 @@ def run(root: Path, cfg: Config) -> dict:
         "section_bpm_interaction": section_bpm_interaction(rows),
         "clap_zscores": clap_zscores(rows),
         "calibration": calibrate_thresholds(rows),
+        "negative_candidates": mine_negatives(rows, k=10),
     }
     out = root / "metadata" / "prompt_difficulty.json"
     out.parent.mkdir(parents=True, exist_ok=True)

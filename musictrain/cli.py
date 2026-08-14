@@ -125,8 +125,49 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_sweep(args) -> int:
+    from .sweep import chain_generations, run_ensemble, run_sweep
+
+    cfg = _build_config(args)
+    if args.kind == "ensemble":
+        rows, best = run_ensemble(cfg, args.prompt, n=args.n, generator=None if not args.no_cache else None)
+        return 0 if best else 1
+    if args.kind == "chain":
+        chain = chain_generations(cfg, args.prompt, steps=args.n)
+        return 0 if chain else 1
+    guidance = [float(x) for x in args.guidance.split(",") if x.strip()]
+    seeds = [int(x) for x in args.seeds.split(",") if x.strip()]
+    if args.kind == "seeds":
+        guidance = [cfg.inference.guidance_scale]
+    rows, best = run_sweep(cfg, args.prompt, guidance, seeds)
+    return 0 if best else 1
+
+
+def cmd_finetune(args) -> int:
+    from .finetune import train
+
+    cfg = _build_config(args)
+    result = train(
+        cfg, steps=args.steps, lr=args.lr, limit=args.limit,
+        out_dir=Path(args.out) if args.out else None, r=args.r,
+    )
+    return 0 if result else 1
+
+
+def cmd_merge(args) -> int:
+    from .merge import merge
+
+    try:
+        out = merge([Path(m) for m in args.models], Path(args.out), weights=args.weights)
+    except Exception as exc:  # noqa: BLE001
+        console.error(f"Merge failed: {exc}")
+        return 1
+    console.ok(f"Merged model -> {out}")
+    return 0
+
+
 def cmd_infer(args) -> int:
-    from .inference import generate, generate_batch
+    from .inference import generate, generate_batch, generate_cached
 
     cfg = _build_config(args)
     icfg = cfg.inference
@@ -151,6 +192,8 @@ def cmd_infer(args) -> int:
 
     out_dir = Path(args.out) if args.out else cfg.project_root / "outputs"
 
+    generator = generate_cached if args.cache else generate
+
     if args.prompts_file:
         items = []
         for ln in Path(args.prompts_file).read_text().splitlines():
@@ -172,7 +215,7 @@ def cmd_infer(args) -> int:
         if not args.prompt:
             console.error("Provide --prompt or --prompts-file.")
             return 1
-        result = generate(
+        result = generator(
             cfg, args.prompt, out_dir=out_dir, seed=args.seed,
             continue_from=Path(args.continue_from) if args.continue_from else None,
             melody_from=Path(args.melody_from) if args.melody_from else None,
@@ -660,7 +703,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--prompts-file", default=None)
     sp.add_argument("--model", default=None, help="e.g. facebook/musicgen-medium")
     sp.add_argument("--device", default=None, choices=["mps", "cpu", "cuda", "auto"])
-    sp.add_argument("--dtype", default=None, choices=["float32", "float16"])
+    sp.add_argument("--dtype", default=None, choices=["float32", "float16", "bf16"],
+                    help="Model dtype (advanced #11)")
     sp.add_argument("--guidance", type=float, default=None)
     sp.add_argument("--max-new-tokens", type=int, default=None)
     sp.add_argument("--seed", type=int, default=None)
@@ -671,6 +715,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--negative-retries", type=int, default=None, help="Auto-regenerate until negative constraint passes (#33)")
     sp.add_argument("--continue-from", default=None, help="Continue from an existing audio clip (#35)")
     sp.add_argument("--melody-from", default=None, help="Follow a clip's melody (use musicgen-melody) (#36)")
+    sp.add_argument("--cache", action="store_true",
+                    help="Deterministic cache: identical settings reuse prior output (advanced #20)")
     sp.set_defaults(func=cmd_infer)
 
     # presets
@@ -790,6 +836,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common(sp)
     sp.set_defaults(func=cmd_difficulty)
+
+    # sweep (advanced #14/#15/#18/#19)
+    sp = sub.add_parser(
+        "sweep",
+        help="Guidance/seed search, prompt ensembling, and conditioning chaining (advanced)",
+    )
+    add_common(sp)
+    sp.add_argument("--prompt", required=True)
+    sp.add_argument("--kind", choices=["sweep", "ensemble", "chain", "seeds"], default="sweep",
+                    help="sweep: guidance grid; seeds: seed grid; ensemble: prompt variants; chain: melody chaining")
+    sp.add_argument("--guidance", default="2.0,3.0,4.0", help="Comma-separated guidance values")
+    sp.add_argument("--seeds", default="0,1,2", help="Comma-separated seeds")
+    sp.add_argument("--n", type=int, default=4, help="Variants (ensemble) or steps (chain)")
+    sp.add_argument("--no-cache", action="store_true", help="Disable the deterministic cache")
+    sp.set_defaults(func=cmd_sweep)
+
+    # finetune (advanced #12)
+    sp = sub.add_parser("finetune", help="LoRA fine-tune the decoder on segments + labels (advanced)")
+    add_common(sp)
+    sp.add_argument("--steps", type=int, default=5, help="Gradient steps (0 = dry run)")
+    sp.add_argument("--lr", type=float, default=1e-4)
+    sp.add_argument("--limit", type=int, default=0, help="Limit training pairs")
+    sp.add_argument("--out", default=None, help="Adapter output dir (default adapters/)")
+    sp.add_argument("--r", type=int, default=8, help="LoRA rank")
+    sp.set_defaults(func=cmd_finetune)
+
+    # merge (advanced #13)
+    sp = sub.add_parser(
+        "merge",
+        help="Average weights of 2+ checkpoints into a merged model dir",
+    )
+    add_common(sp)
+    sp.add_argument("--models", nargs="+", required=True, help="Checkpoint dirs to average")
+    sp.add_argument("--out", required=True, help="Output model dir")
+    sp.add_argument("--weights", nargs="+", type=float, default=None,
+                    help="Optional per-model weights (defaults to equal)")
+    sp.set_defaults(func=cmd_merge)
 
     # report
     sp = sub.add_parser("report", help="Export eval results to CSV + HTML")

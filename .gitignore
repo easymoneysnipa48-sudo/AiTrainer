@@ -48,6 +48,10 @@ metadata/human_ratings.jsonl
 metadata/musictrain.log
 metadata/prompt_gallery.json
 metadata/custom_vocab.json
+metadata/prompt_difficulty.json
+metadata/metaanalysis.json
+metadata/generation_cache.json
+adapters/
 mlruns/
 mlruns.db
 mlflow.db

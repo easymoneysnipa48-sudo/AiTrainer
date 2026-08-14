@@ -11,6 +11,7 @@ Phase 5 additions:
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,9 +42,12 @@ def load_model(cfg: InferenceCfg) -> Tuple:
     from transformers import AutoModelForTextToWaveform, AutoProcessor
 
     device = resolve_device(cfg.device)
+    # advanced #11 — dtype control (float32 | float16 | bf16)
     dtype = torch.float32
-    if device == "cuda" and cfg.torch_dtype == "float16":
+    if cfg.torch_dtype == "float16":
         dtype = torch.float16
+    elif cfg.torch_dtype == "bf16":
+        dtype = torch.bfloat16
 
     console.info(f"Loading {cfg.model_name} on {device} (dtype={cfg.torch_dtype})…")
     # AutoModelForTextToWaveform dispatches to MusicgenForConditionalGeneration
@@ -54,6 +58,87 @@ def load_model(cfg: InferenceCfg) -> Tuple:
     ).to(device)
     processor = AutoProcessor.from_pretrained(cfg.model_name)
     return processor, model, device
+
+
+# --------------------------------------------------------------------------- #
+# advanced #20 — deterministic generation cache
+# --------------------------------------------------------------------------- #
+_CACHE_FILE = "metadata/generation_cache.json"
+
+
+def _cache_key(cfg: Config, prompt: str, seed: Optional[int],
+               cond_path: Optional[Path] = None,
+               conditioning_kind: Optional[str] = None) -> str:
+    icfg = cfg.inference
+    parts = [
+        icfg.model_name, prompt, str(seed or ""), str(icfg.guidance_scale),
+        str(icfg.max_new_tokens), icfg.preset or "", str(icfg.temperature),
+        str(icfg.top_k), str(icfg.top_p), str(cond_path or ""),
+        conditioning_kind or "", str(icfg.negative_prompt or ""),
+    ]
+    import hashlib
+
+    return hashlib.sha1("\x1f".join(parts).encode()).hexdigest()
+
+
+def _load_cache(cfg: Config) -> dict:
+    p = cfg.project_root / _CACHE_FILE
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:  # noqa: BLE001 - corrupt cache -> start fresh
+        return {}
+
+
+def _save_cache(cfg: Config, cache: dict) -> None:
+    p = cfg.project_root / _CACHE_FILE
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cache, indent=2))
+
+
+def generate_cached(cfg: Config, prompt: str, out_dir: Optional[Path] = None,
+                    seed: Optional[int] = None, use_cache: bool = True,
+                    melody_from: Optional[Path] = None,
+                    continue_from: Optional[Path] = None,
+                    **kwargs) -> dict:
+    """generate() with a deterministic content-addressed cache.
+
+    Same model + prompt + sampling settings + seed + conditioning -> same file
+    (the cache key is a hash of all of them). Cached hits skip the model
+    entirely and return a result dict with the stored path.
+    """
+    import soundfile as sf
+
+    cond_path = Path(melody_from) if melody_from else (
+        Path(continue_from) if continue_from else None
+    )
+    kind = "melody" if melody_from else ("continuation" if continue_from else None)
+    key = _cache_key(cfg, prompt, seed, cond_path, kind)
+
+    cache = _load_cache(cfg) if use_cache else {}
+    hit = cache.get(key)
+    if use_cache and hit and Path(hit).exists():
+        console.info(f"[cache] hit {Path(hit).name} for {prompt[:40]!r}")
+        info = sf.info(hit)
+        return {
+            "path": hit, "prompt": prompt, "seed": seed,
+            "device": "cache", "sample_rate": int(info.samplerate),
+            "duration": round(float(info.duration), 3),
+            "shape": [1, int(info.frames)],
+            "max_new_tokens": cfg.inference.max_new_tokens,
+            "target_seconds": None, "conditioned_on": str(cond_path) if cond_path else None,
+            "conditioning_kind": kind, "cached": True,
+        }
+
+    result = generate(
+        cfg, prompt, out_dir=out_dir, seed=seed,
+        melody_from=melody_from, continue_from=continue_from, **kwargs,
+    )
+    if result and use_cache:
+        cache[key] = result["path"]
+        _save_cache(cfg, cache)
+    return result
 
 
 def _extract_audio(out):

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .. import console
 from ..config import Config
@@ -123,7 +123,8 @@ def _slice_args(src: Path, dst: Path, start: float, end: float, cfg: Config, fad
     return args
 
 
-def segment(root: Path, cfg: Config, force: bool = False, dry_run: bool = False) -> List[dict]:
+def segment(root: Path, cfg: Config, force: bool = False, dry_run: bool = False,
+            progress: Optional[Callable[[int, int], None]] = None) -> List[dict]:
     scfg = cfg.segment
     clean_dir = root / "data" / "clean"
     seg_dir = root / "data" / "segments"
@@ -140,7 +141,9 @@ def segment(root: Path, cfg: Config, force: bool = False, dry_run: bool = False)
     manifest: List[dict] = []
     console.step(f"Segmenting {len(files)} files -> data/segments")
 
-    for src in files:
+    for idx, src in enumerate(files, 1):
+        if progress:
+            progress(idx, len(files))
         song_id = sanitize_slug(src.stem)
         bpm = bpm_map.get(song_id) or bpm_map.get(src.stem)
         length = _segment_length(bpm, cfg)

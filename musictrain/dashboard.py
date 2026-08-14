@@ -23,6 +23,27 @@ st.set_page_config(page_title="MusicTrain", page_icon="🎵", layout="wide")
 ROOT = Path.cwd()
 
 
+# feature 37 — curated prompt templates (section/energy/BPM angle)
+_TEMPLATES = [
+    {"name": "Sparse intro", "section": "intro", "energy": "low",
+     "prompt": "sparse cinematic intro, 70 BPM, A minor, dark piano loop, airy pads, low energy, wide reverb"},
+    {"name": "Trap verse", "section": "verse", "energy": "mid",
+     "prompt": "melodic trap verse, 140 BPM, B minor, rolling 808 bass, trap hi-hats, pluck melody, aggressive"},
+    {"name": "Melodic chorus", "section": "chorus", "energy": "high",
+     "prompt": "melodic trap chorus, 96 BPM, A minor, dark piano, deep 808 bass, wide strings, powerful drums, emotional"},
+    {"name": "Emotional pre-chorus", "section": "pre-chorus", "energy": "mid",
+     "prompt": "emotional pre-chorus, 84 BPM, F minor, warm pads, soft piano, build tension, atmospheric"},
+    {"name": "Bridge breakdown", "section": "bridge", "energy": "low",
+     "prompt": "bridge breakdown, 90 BPM, C minor, stripped drums, ambient pads, melancholic, reflective"},
+    {"name": "Outro fade", "section": "outro", "energy": "low",
+     "prompt": "outro fade, 72 BPM, A minor, piano and pads fading out, dark, spacious, low energy"},
+    {"name": "Orchestral intro", "section": "intro", "energy": "low",
+     "prompt": "orchestral intro, 60 BPM, D minor, strings swells, timpani roll, cinematic, epic"},
+    {"name": "Full-song demo", "section": "full-song", "energy": "high",
+     "prompt": "full trap song demo, 140 BPM, E minor, intro verse chorus structure, 808 bass, trap hi-hats, dark piano, emotional"},
+]
+
+
 # --------------------------------------------------------------------------- #
 # Theme (dark / light) — feature 1
 # --------------------------------------------------------------------------- #
@@ -337,8 +358,73 @@ def _skeleton(n: int = 3, height: int = 60) -> None:
         st.skeleton(height=height)
 
 
+# feature 41-45 infra ---------------------------------------------------------
+def _log_line(text: str) -> None:
+    """Append a timestamped line to metadata/musictrain.log (feature 42)."""
+    try:
+        logf = ROOT / "metadata" / "musictrain.log"
+        logf.parent.mkdir(parents=True, exist_ok=True)
+        with logf.open("a") as fh:
+            fh.write(f"{time.strftime('%H:%M:%S')} {text}\n")
+    except Exception:  # noqa: BLE001 - logging must never break the app
+        pass
+
+
+def _log_tail(n: int = 300) -> str:
+    logf = ROOT / "metadata" / "musictrain.log"
+    if not logf.exists():
+        return "(no activity logged yet — run a job from any page)"
+    lines = logf.read_text().splitlines()
+    return "\n".join(lines[-n:])
+
+
+def _beep() -> None:
+    """Feature 45: play a short two-tone chime in the browser on completion."""
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(
+            """<script>
+            try {
+              const ctx = new (window.AudioContext || window.webkitAudioContext)();
+              [660, 880].forEach((f, i) => {
+                const o = ctx.createOscillator(), g = ctx.createGain();
+                o.frequency.value = f; o.type = 'sine';
+                g.gain.setValueAtTime(0.0001, ctx.currentTime + i * 0.15);
+                g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + i * 0.15 + 0.02);
+                g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + i * 0.15 + 0.4);
+                o.connect(g); g.connect(ctx.destination);
+                o.start(ctx.currentTime + i * 0.15); o.stop(ctx.currentTime + i * 0.15 + 0.45);
+              });
+            } catch (e) {}
+            </script>""",
+            height=0,
+        )
+    except Exception:  # noqa: BLE001 - sound is best-effort
+        pass
+
+
+def _record_job(label: str, fn: Callable, args: tuple, kwargs: dict) -> None:
+    """Feature 39: remember the last job for one-click replay, and log it."""
+    st.session_state["mt_last_job"] = (label, fn, args, kwargs)
+    _log_line(f"▶ {label}")
+
+
+def _last_job_ui() -> None:
+    """Feature 39: replay button for the last job run from the dashboard."""
+    last = st.session_state.get("mt_last_job")
+    if not last:
+        return
+    label, fn, args, kwargs = last
+    st.markdown("---")
+    st.caption("↻ Last job")
+    if st.button(f"Replay: {label}", key="last_job_replay", width="stretch"):
+        _run_job(label, fn, *args, **kwargs)
+
+
 def _run_job(label: str, fn: Callable, *args, **kwargs):
     """Run `fn` on a worker thread while animating a progress bar."""
+    _record_job(label, fn, args, kwargs)
     out: dict = {}
 
     def _worker() -> None:
@@ -360,9 +446,16 @@ def _run_job(label: str, fn: Callable, *args, **kwargs):
 
     if "error" in out:
         bar.progress(1.0, text=f"{label} — failed")
+        _log_line(f"✗ {label}: {out['error']}")
         st.error(str(out["error"]))
         raise out["error"]
     bar.progress(1.0, text=f"{label} — done")
+    _log_line(f"✓ {label}")
+    try:
+        st.toast(f"✅ {label} — done")  # feature 41
+        _beep()                          # feature 45
+    except Exception:  # noqa: BLE001
+        pass
     return out.get("result")
 
 
@@ -382,6 +475,7 @@ def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
         except Exception as exc:  # noqa: BLE001
             out["error"] = exc
 
+    _record_job(label, fn, args, kwargs)
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
 
@@ -403,38 +497,50 @@ def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
         with slot.container():
             st.progress(1.0, text=f"{label} — cancelled")
             st.info(f"{label} cancelled (worker finishing in background).")
+        _log_line(f"■ {label} cancelled")
         return None
     if "error" in out:
         with slot.container():
             st.progress(1.0, text=f"{label} — failed")
             st.error(str(out["error"]))
+        _log_line(f"✗ {label}: {out['error']}")
         raise out["error"]
     with slot.container():
         st.progress(1.0, text=f"{label} — done")
+    _log_line(f"✓ {label}")
+    try:
+        st.toast(f"✅ {label} — done")
+        _beep()
+    except Exception:  # noqa: BLE001
+        pass
     return out.get("result")
 
 
-def _run_eval_queue(label: str, fn: Callable, *args, **kwargs):
-    """Feature 27+43: run `fn` with live per-prompt progress and cancel.
+def _run_live(label: str, fn: Callable, *args, progress_kw: str = "progress",
+              cancel_kw: Optional[str] = None, **kwargs):
+    """Features 27+43: run `fn` with live progress (and optional cancel).
 
-    `fn` must accept `progress(done, total)` and `cancel() -> bool` callbacks
-    (``run_eval`` supports both). The bar shows real prompt counts, and the
-    cancel button asks ``run_eval`` to stop after the current prompt.
+    `fn` must accept a ``progress(done, total)`` callback (and optionally a
+    ``cancel() -> bool`` callback, named by ``cancel_kw``). The bar shows real
+    item counts instead of a fake animation. `cancel_kw` may be None when the
+    target function has no cancellation support.
     """
     state = {"done": 0, "total": 0, "result": None, "error": None, "cancelled": False}
 
     def _cb(done: int, total: int) -> None:
         state["done"], state["total"] = done, total
 
-    def _cancel() -> bool:
-        return state["cancelled"]
+    cb = {progress_kw: _cb}
+    if cancel_kw:
+        cb[cancel_kw] = lambda: state["cancelled"]
 
     def _worker() -> None:
         try:
-            state["result"] = fn(*args, progress=_cb, cancel=_cancel, **kwargs)
+            state["result"] = fn(*args, **cb, **kwargs)
         except Exception as exc:  # noqa: BLE001
             state["error"] = exc
 
+    _record_job(label, fn, args, kwargs)
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
 
@@ -443,8 +549,8 @@ def _run_eval_queue(label: str, fn: Callable, *args, **kwargs):
         done, total = state["done"], state["total"]
         frac = (done / total) if total else 0.0
         with slot.container():
-            st.progress(frac, text=f"{label} — {done}/{total} prompts")
-            if st.button("⏹ Cancel", key="cancel_eval_btn"):
+            st.progress(frac, text=f"{label} — {done}/{total}")
+            if cancel_kw and st.button("⏹ Cancel", key="cancel_live_btn"):
                 state["cancelled"] = True
                 break
         time.sleep(0.15)
@@ -454,12 +560,24 @@ def _run_eval_queue(label: str, fn: Callable, *args, **kwargs):
         with slot.container():
             st.progress(1.0, text=f"{label} — failed")
             st.error(str(state["error"]))
+        _log_line(f"✗ {label}: {state['error']}")
         raise state["error"]
     done, total = state["done"], state["total"]
     frac = (done / total) if total else 1.0
     with slot.container():
-        st.progress(frac, text=f"{label} — {done}/{total} prompts (done)")
+        st.progress(frac, text=f"{label} — {done}/{total} (done)")
+    _log_line(f"✓ {label} ({done}/{total})")
+    try:
+        st.toast(f"✅ {label} — done")
+        _beep()
+    except Exception:  # noqa: BLE001
+        pass
     return state["result"]
+
+
+def _run_eval_queue(label: str, fn: Callable, *args, **kwargs):
+    """Feature 27: eval wrapper over _run_live with cancel + prompt counts."""
+    return _run_live(label, fn, *args, progress_kw="progress", cancel_kw="cancel", **kwargs)
 
 
 def _zip_report() -> None:
@@ -851,7 +969,7 @@ def page_split() -> None:
         if st.button("Segment audio", type="primary", key="seg_run"):
             from musictrain.audio.segment import segment
 
-            segs = _run_job_cancellable("Segmenting audio", segment, ROOT, cfg)
+            segs = _run_live("Segmenting audio", segment, ROOT, cfg, progress_kw="progress")
             if segs is not None:
                 st.success(f"{len(segs)} segments written")
     with col2:
@@ -882,6 +1000,17 @@ def page_split() -> None:
 def page_generate() -> None:
     _page_header("🎛️", "Generate audio", "MusicGen on MPS — prompt, guidance, and sampling control.")
     cfg = load_cfg()
+
+    # feature 37 — template library (apply fills the prompt area)
+    t_names = ["— custom —"] + [t["name"] for t in _TEMPLATES]
+    tc1, tc2 = st.columns([3, 1])
+    tpl = tc1.selectbox("📚 Template", t_names, index=0, key="gen_tpl")
+    if tc2.button("Apply template", key="gen_tpl_apply", width="stretch"):
+        hit = next((t for t in _TEMPLATES if t["name"] == tpl), None)
+        if hit:
+            st.session_state["gen_prompt"] = hit["prompt"]
+            st.rerun()
+
     prompt = st.text_area(
         "Prompt",
         value="cinematic hip hop chorus, 96 BPM, A minor, dark piano, "
@@ -917,6 +1046,8 @@ def page_generate() -> None:
         cfg.inference.preset = preset
         cfg.inference.negative_prompt = negative
 
+        t0 = time.monotonic()
+
         def _go():
             return generate(cfg, prompt, out_dir=ROOT / "outputs", seed=int(seed) or None)
 
@@ -924,7 +1055,10 @@ def page_generate() -> None:
         if result is None:
             st.info("Generation cancelled.")
         else:
+            elapsed = max(time.monotonic() - t0, 0.001)
+            tps = result.get("max_new_tokens", 0) / elapsed
             st.success(f"Saved {result['path']} ({result['duration']}s, {result['device']})")
+            st.caption(f"⚡ ~{tps:.0f} tokens/s (model+audio pipeline wall time) — feature 44")
             st.subheader("Result")
             st.audio(str(result["path"]))
             st.json(result)
@@ -1503,6 +1637,17 @@ def page_leaderboard() -> None:
         _leaderboard_view(cfg)
 
 
+def _undo_ratings_ui(ratings_path: Path) -> None:
+    """Feature 38: undo the last rating save (session undo stack of line counts)."""
+    undo = st.session_state.setdefault("mt_rating_undo", [])
+    if undo and st.button("↩ Undo last rating save", key="lst_undo"):
+        target = undo.pop()
+        lines = ratings_path.read_text().splitlines()[:target]
+        ratings_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        st.success("Undid last rating save.")
+        st.rerun()
+
+
 # --------------------------------------------------------------------------- #
 # 🎧 Listening
 # --------------------------------------------------------------------------- #
@@ -1591,8 +1736,10 @@ def page_listening() -> None:
             )
             ratings[key] = {"rating": rating, "note": note}
 
-    if st.button("Save ratings", type="primary", key="lst_save"):
+    c_save, c_undo = st.columns([1, 1])
+    if c_save.button("Save ratings", type="primary", key="lst_save"):
         saved = 0
+        before = sum(1 for _ in ratings_path.open())
         with ratings_path.open("a") as fh:
             for (prompt, checkpoint), rr in ratings.items():
                 if rr["note"] or rr["rating"] != existing.get((prompt, checkpoint), {}).get("rating", 3):
@@ -1608,8 +1755,10 @@ def page_listening() -> None:
                         + "\n"
                     )
                     saved += 1
+        st.session_state.setdefault("mt_rating_undo", []).append(before + saved)  # feature 38
         st.success(f"Saved {saved} rating(s) -> metadata/human_ratings.jsonl")
         st.rerun()
+    _undo_ratings_ui(ratings_path)
 
     st.caption(f"Already rated: {len(existing)} prompt/checkpoint pairs")
 
@@ -1656,16 +1805,20 @@ def _ab_compare(rows: list, picked: list, existing: dict, ratings_path: Path) ->
                             st.session_state[f"ab_{i}_{ck}"] = v
                     ratings[key] = {"rating": chosen, "note": prev.get("note", "")}
 
-    if st.button("Save A/B ratings", type="primary", key="ab_save"):
+    c_save, c_undo = st.columns([1, 1])
+    if c_save.button("Save A/B ratings", type="primary", key="ab_save"):
         saved = 0
+        before = sum(1 for _ in ratings_path.open())
         with ratings_path.open("a") as fh:
             for (prompt, checkpoint), rr in ratings.items():
                 if rr["rating"] != existing.get((prompt, checkpoint), {}).get("rating", 3):
                     fh.write(json.dumps({"prompt": prompt, "checkpoint": checkpoint,
                                          "rating": rr["rating"], "note": rr["note"]}) + "\n")
                     saved += 1
+        st.session_state.setdefault("mt_rating_undo", []).append(before + saved)
         st.success(f"Saved {saved} A/B rating(s) -> metadata/human_ratings.jsonl")
         st.rerun()
+    _undo_ratings_ui(ratings_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -1705,6 +1858,35 @@ def page_promptbuilder() -> None:
     prompt = st.text_area("Prompt", value=assembled, height=90, key="pb_prompt")
     st.code(prompt, language=None)
 
+    # feature 36 — prompt gallery (save favorites, one-click reuse)
+    gallery_path = ROOT / "metadata" / "prompt_gallery.json"
+    gallery: list = json.loads(gallery_path.read_text()) if gallery_path.exists() else []
+    gc1, gc2 = st.columns([3, 1])
+    gtags = gc1.text_input("Gallery tags (comma-separated)", value="", key="pb_gtags",
+                           placeholder="chorus, dark, bpm140")
+    if gc2.button("💾 Save to gallery", key="pb_gsave") and prompt.strip():
+        gallery.append({
+            "prompt": prompt,
+            "tags": [t.strip() for t in gtags.split(",") if t.strip()],
+            "section": section,
+            "created": time.strftime("%Y-%m-%d %H:%M"),
+        })
+        gallery_path.write_text(json.dumps(gallery, indent=2))
+        st.success("Saved to metadata/prompt_gallery.json")
+        st.rerun()
+    if gallery:
+        with st.expander(f"🗂️ Prompt gallery ({len(gallery)} saved)", expanded=False):
+            gal_filter = st.text_input("Filter by tag", value="", key="pb_gfilter")
+            q = gal_filter.strip().lower()
+            for i, g in enumerate(gallery):
+                if q and not any(q in t.lower() for t in g.get("tags", [])):
+                    continue
+                st.caption(f"{g.get('created', '')} · tags: {', '.join(g.get('tags', [])) or '—'}")
+                st.code(g["prompt"], language=None)
+                if st.button("↩ Use", key=f"pb_guse_{i}"):
+                    st.session_state["pb_prompt"] = g["prompt"]
+                    st.rerun()
+
     if st.button("Generate with MusicGen", type="primary", key="pb_gen"):
         from musictrain.inference import generate
 
@@ -1712,6 +1894,37 @@ def page_promptbuilder() -> None:
         if result is not None:
             st.success(f"Saved {result['path']} ({result['duration']}s)")
             st.audio(str(result["path"]))
+
+
+@st.fragment(run_every=15)
+def _sched_eval(cfg: Config, secs: list, seeds: int, limit: int) -> None:
+    """Feature 40: auto-run the selected eval on a timer while armed & overdue.
+
+    The last-run timestamp is set *before* starting, so interrupted fragment
+    re-runs can never stack a second eval on top of a live one.
+    """
+    if not st.session_state.get("ev_sched"):
+        return
+    nmin = int(st.session_state.get("ev_nmin", 10) or 10)
+    last = st.session_state.get("ev_last_run", 0.0)
+    if time.time() - last < nmin * 60:
+        return
+
+    from musictrain.evalset import run_eval as _run_eval
+
+    evf = ROOT / "metadata" / "eval_results.jsonl"
+    if evf.exists():
+        (evf.parent / "eval_results.jsonl.bak").write_bytes(evf.read_bytes())
+    st.session_state["ev_last_run"] = time.time()
+    st.info(f"🕐 Scheduled eval starting ({time.strftime('%H:%M:%S')}) — watch the Logs page.")
+    section = ",".join(secs) if secs else None
+    results = _run_live(
+        "Scheduled eval", _run_eval, cfg,
+        limit=limit, section=section, seeds=seeds,
+        progress_kw="progress", cancel_kw="cancel",
+    )
+    ok = sum(1 for r in (results or []) if r.get("status") == "ok")
+    st.success(f"Scheduled eval done: {len(results or [])} prompts, {ok} ok.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1736,6 +1949,14 @@ def page_eval() -> None:
     secs = c1.multiselect("Sections", sections, default=sections[:2], key="ev_secs")
     seeds = c2.number_input("Seeds (majority verdict)", 1, 5, 1, key="ev_seeds")
     limit = c3.number_input("Limit (0 = all)", 0, len(prompts), 0, key="ev_limit")
+
+    # feature 40 — scheduled auto-run (while this page is open)
+    sc1, sc2 = st.columns([1, 2])
+    sched = sc1.toggle("🕐 Auto-run eval", value=False, key="ev_sched",
+                       help="Re-runs the selected eval on a timer while this page is open.")
+    nmin = sc2.number_input("Interval (minutes)", 1, 120, 10, key="ev_nmin")
+    if sched:
+        st.caption(f"⏱ Armed: auto-run every {int(nmin)} min (fires on page refresh while this page is open).")
 
     st.caption(
         f"{len(prompts)} prompts in the set · current result file has "
@@ -1768,6 +1989,28 @@ def page_eval() -> None:
             cols = [c for c in ("prompt", "section", "bpm_target", "detected_bpm", "deviation", "clap_score", "status") if c in results[0]]
             st.dataframe(pd.DataFrame(results)[cols], width="stretch")
 
+    _sched_eval(cfg, secs, int(seeds), int(limit))
+
+
+# --------------------------------------------------------------------------- #
+# 🪵 Logs
+# --------------------------------------------------------------------------- #
+@st.fragment(run_every=10)
+def _logs_view() -> None:
+    """Auto-refreshing tail of metadata/musictrain.log (feature 42)."""
+    text = _log_tail(400)
+    st.caption("Tails metadata/musictrain.log · auto-refreshes every 10s")
+    st.code(text, language=None)
+    st.download_button(
+        "⬇ Download log", data=_log_tail(10000).encode("utf-8"),
+        file_name="musictrain.log", mime="text/plain", width="stretch",
+    )
+
+
+def page_logs() -> None:
+    _page_header("🪵", "Activity log", "Live tail of every dashboard job — started, done, cancelled, failed.")
+    _logs_view()
+
 
 PAGES = {
     "📋 Inventory": page_inventory,
@@ -1783,6 +2026,7 @@ PAGES = {
     "🏆 Leaderboard": page_leaderboard,
     "🎯 Eval": page_eval,
     "🎧 Listening": page_listening,
+    "🪵 Logs": page_logs,
 }
 
 
@@ -1799,6 +2043,7 @@ def main() -> None:
         _global_search()
         st.markdown("---")
         _sidebar_stats(load_cfg())
+        _last_job_ui()  # feature 39 — replay the last job
         st.markdown("---")
         choice = st.radio("Go to", list(PAGES.keys()), key="nav")
 

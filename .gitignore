@@ -45,6 +45,9 @@ metadata/metrics.json
 metadata/significance.json
 metadata/leaderboard.json
 metadata/human_ratings.jsonl
+metadata/musictrain.log
+metadata/prompt_gallery.json
+metadata/custom_vocab.json
 mlruns/
 mlruns.db
 mlflow.db

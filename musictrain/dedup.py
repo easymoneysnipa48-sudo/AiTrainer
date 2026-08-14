@@ -137,8 +137,91 @@ def find_duplicates(root: Path, cfg: Config, which: str = "clean") -> Dict:
     return report
 
 
-def _move_dupes(root: Path, clusters: List[dict]) -> None:
-    dupes_dir = root / "data" / "dupes"
+def dedup_segments(root: Path, cfg: Config, which: str = "segments") -> Dict:
+    """Post-segment dedup (Advanced #25).
+
+    Runs the same exact + perceptual pipeline over a segment directory (default
+    ``data/segments``) — segments cut from the same bar are near-identical, so
+    this catches redundant training examples before they enter the fine-tune set.
+    """
+    target = root / "data" / which
+    if not target.exists():
+        console.error(f"Directory not found: {target}")
+        return {}
+
+    files = _scan(target)
+    if not files:
+        console.warn(f"No audio files under {target}")
+        return {}
+
+    console.step(f"Deduplicating {len(files)} segment(s) under data/{which}…")
+    by_hash: Dict[str, List[Path]] = defaultdict(list)
+    for p in files:
+        try:
+            by_hash[sha256_file(p)].append(p)
+        except Exception:  # noqa: BLE001
+            continue
+    exact = [g for g in by_hash.values() if len(g) > 1]
+
+    clusters: List[dict] = []
+    if cfg.dedup.exact_only:
+        fp: Dict[Path, np.ndarray] = {}
+    else:
+        fp = {}
+        for p in files:
+            try:
+                fp[p] = chroma_fingerprint(p)
+            except Exception as exc:  # noqa: BLE001
+                console.warn(f"Fingerprint failed {p.name}: {exc}")
+        reps: List[Path] = []
+        for p in files:
+            if p not in fp:
+                continue
+            if not any(_pitch_invariant_sim(fp[rep], fp[p]) >= cfg.dedup.threshold for rep in reps):
+                reps.append(p)
+        members: Dict[Path, List[Path]] = {rep: [] for rep in reps}
+        for p in files:
+            if p not in fp:
+                continue
+            for rep in reps:
+                if rep == p or _pitch_invariant_sim(fp[rep], fp[p]) >= cfg.dedup.threshold:
+                    members[rep].append(p)
+                    break
+        for rep, mem in members.items():
+            if len(mem) > 1:
+                clusters.append(
+                    {
+                        "canonical": str(rep.relative_to(root)),
+                        "members": [str(m.relative_to(root)) for m in mem],
+                        "kind": "perceptual",
+                    }
+                )
+
+    for group in exact:
+        rel = [str(p.relative_to(root)) for p in group]
+        if not any(c["members"] == rel for c in clusters):
+            clusters.append({"canonical": rel[0], "members": rel, "kind": "exact"})
+
+    report = {
+        "dir": f"data/{which}",
+        "scanned": len(files),
+        "duplicate_groups": len(clusters),
+        "duplicate_files": sum(len(c["members"]) - 1 for c in clusters),
+        "groups": clusters,
+    }
+    out = root / "metadata" / "segment_duplicates.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2))
+    console.ok(
+        f"{report['duplicate_files']} duplicate segment(s) -> metadata/segment_duplicates.json"
+    )
+    if cfg.dedup.action == "move" and clusters:
+        _move_dupes(root, clusters, dest="segment_dupes")
+    return report
+
+
+def _move_dupes(root: Path, clusters: List[dict], dest: str = "dupes") -> None:
+    dupes_dir = root / "data" / dest
     dupes_dir.mkdir(parents=True, exist_ok=True)
     moved = 0
     for c in clusters:
@@ -151,4 +234,4 @@ def _move_dupes(root: Path, clusters: List[dict]) -> None:
                 dst = dupes_dir / f"{src.stem}_{src.stat().st_size}{src.suffix}"
             shutil.move(str(src), str(dst))
             moved += 1
-    console.ok(f"Moved {moved} duplicate(s) -> data/dupes/")
+    console.ok(f"Moved {moved} duplicate(s) -> data/{dest}/")

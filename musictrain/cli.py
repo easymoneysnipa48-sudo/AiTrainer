@@ -602,6 +602,95 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def cmd_resynth(args) -> int:
+    from .resynth import resynth, rebuild_instrumental
+
+    cfg = _build_config(args)
+    gains = None
+    if args.gain:
+        gains = {}
+        for pair in args.gain:
+            if "=" in pair:
+                name, val = pair.split("=", 1)
+                gains[name.strip()] = float(val)
+    if args.instrumental:
+        rebuild_instrumental(cfg.project_root, cfg, limit=args.limit)
+    else:
+        resynth(cfg.project_root, cfg, which=args.dir, gains=gains, limit=args.limit)
+    return 0
+
+
+def cmd_invert(args) -> int:
+    from .invert import invert
+
+    cfg = _build_config(args)
+    invert(cfg.project_root, cfg, Path(args.path).resolve(), top_k=args.top)
+    return 0
+
+
+def cmd_active(args) -> int:
+    from .active import rank_unlabeled
+
+    cfg = _build_config(args)
+    rank_unlabeled(cfg.project_root, cfg, which=args.dir, top_k=args.top)
+    return 0
+
+
+def cmd_augment(args) -> int:
+    from .augment import augment
+
+    cfg = _build_config(args)
+    ops = args.ops.split(",") if args.ops else None
+    augment(cfg.project_root, cfg, which=args.dir, ops=ops, limit=args.limit)
+    return 0
+
+
+def cmd_sections(args) -> int:
+    from .sections import auto_sections
+
+    cfg = _build_config(args)
+    auto_sections(cfg.project_root, cfg, force=args.force)
+    return 0
+
+
+def cmd_drift(args) -> int:
+    from .drift import drift_report
+
+    cfg = _build_config(args)
+    drift_report(
+        cfg.project_root, cfg,
+        reference=args.reference, current=args.current, threshold=args.threshold,
+    )
+    return 0
+
+
+def cmd_curation(args) -> int:
+    from .curation import curation_score
+
+    cfg = _build_config(args)
+    curation_score(cfg.project_root, cfg, which=args.dir, top_k=args.top)
+    return 0
+
+
+def cmd_embed_refresh(args) -> int:
+    from .embeddings import refresh
+
+    cfg = _build_config(args)
+    refresh(cfg.project_root, cfg, which=args.dir, limit=args.limit)
+    return 0
+
+
+def cmd_labelprop(args) -> int:
+    from .labelprop import propagate, leakage_check
+
+    cfg = _build_config(args)
+    if args.check_leakage:
+        leakage_check(cfg.project_root, cfg)
+    else:
+        propagate(cfg.project_root, cfg, which=args.dir, min_confidence=args.min_confidence)
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .experiments import launch_ui
 
@@ -991,6 +1080,76 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--path", required=True, help="WAV file to score")
     sp.add_argument("--text", required=True, help="Prompt text to compare against")
     sp.set_defaults(func=cmd_score)
+
+    # resynth
+    sp = sub.add_parser("resynth", help="Re-mix separated stems with per-stem gains")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="Source dir for messaging")
+    sp.add_argument("--gain", action="append", default=None,
+                    help="Stem gain, e.g. --gain vocals=1.2 --gain drums=0.5")
+    sp.add_argument("--instrumental", action="store_true", help="Drop vocals entirely")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_resynth)
+
+    # invert
+    sp = sub.add_parser("invert", help="Invert audio into a text prompt")
+    add_common(sp)
+    sp.add_argument("--path", required=True, help="Audio file to invert")
+    sp.add_argument("--top", type=int, default=5, help="Top retrieved prompts")
+    sp.set_defaults(func=cmd_invert)
+
+    # active
+    sp = sub.add_parser("active", help="Rank unlabeled tracks for labeling priority")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to rank")
+    sp.add_argument("--top", type=int, default=20, help="How many to report")
+    sp.set_defaults(func=cmd_active)
+
+    # augment
+    sp = sub.add_parser("augment", help="Generate audio training variants")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to augment")
+    sp.add_argument("--ops", default=None,
+                    help="Comma list: pitch_up,pitch_down,stretch,noise,eq,quiet")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_augment)
+
+    # sections
+    sp = sub.add_parser("sections", help="Auto-label segments with section roles")
+    add_common(sp)
+    sp.add_argument("--force", action="store_true", help="Re-write labels.csv section_type")
+    sp.set_defaults(func=cmd_sections)
+
+    # drift
+    sp = sub.add_parser("drift", help="Monitor feature drift reference vs current")
+    add_common(sp)
+    sp.add_argument("--reference", default="clean", help="Baseline data/<dir>")
+    sp.add_argument("--current", default="train", help="Current data/<dir>")
+    sp.add_argument("--threshold", type=float, default=0.05, help="KS p-value threshold")
+    sp.set_defaults(func=cmd_drift)
+
+    # curation
+    sp = sub.add_parser("curation", help="Score tracks 0-100 for curation priority")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to score")
+    sp.add_argument("--top", type=int, default=0, help="Only report top N (0 = all)")
+    sp.set_defaults(func=cmd_curation)
+
+    # embed-refresh
+    sp = sub.add_parser("embed-refresh", help="Prune stale + re-embed changed audio")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to refresh")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_embed_refresh)
+
+    # labelprop
+    sp = sub.add_parser("labelprop", help="Propagate labels to similar unlabeled tracks")
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to pseudo-label")
+    sp.add_argument("--min-confidence", type=float, default=0.55)
+    sp.add_argument("--check-leakage", action="store_true",
+                    help="Check train/val/test for cross-split duplicates instead")
+    sp.set_defaults(func=cmd_labelprop)
 
     # ui (MLflow)
     sp = sub.add_parser("ui", help="Launch the MLflow tracking UI")

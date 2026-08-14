@@ -87,6 +87,60 @@ def embed_dir(root: Path, cfg: Config, which: str = "clean", limit: int = 0) -> 
     return out
 
 
+def refresh(root: Path, cfg: Config, which: str = "clean", limit: int = 0) -> Dict[str, int]:
+    """Refresh the embedding cache (Advanced #29).
+
+    Drops entries whose audio files no longer exist, then re-embeds any files
+    that changed (size/mtime differ from the stored snapshot) or are new.
+    """
+    target = root / "data" / which
+    cache = _cache_path(root)
+    stored: Dict[str, dict] = {}
+    if cache.exists():
+        raw = json.loads(cache.read_text())
+        for k, v in raw.items():
+            stored[k] = v if isinstance(v, dict) else {"vec": v, "size": None, "mtime": None}
+
+    files = _scan(target)
+    live = {str(p.relative_to(root)) for p in files}
+
+    removed = [k for k in stored if k not in live]
+    for k in removed:
+        del stored[k]
+
+    out: Dict[str, np.ndarray] = {}
+    changed = 0
+    added = 0
+    for i, p in enumerate(files, 1):
+        if limit and i > limit:
+            break
+        rel = str(p.relative_to(root))
+        st = p.stat()
+        meta = stored.get(rel)
+        if meta is not None and meta.get("size") == st.st_size and meta.get("mtime") == st.st_mtime:
+            out[rel] = np.asarray(meta["vec"], dtype=np.float32)
+            continue
+        try:
+            out[rel] = embed_audio(cfg, p)
+            stored[rel] = {
+                "vec": out[rel].tolist(),
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+            }
+            changed += 1
+            console.info(f"[{i}/{len(files)}] refreshed {p.name}")
+        except Exception as exc:  # noqa: BLE001
+            console.error(f"Embedding failed {p.name}: {exc}")
+
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(stored))
+    console.ok(
+        f"Cache refreshed: {len(out)} live, {len(removed)} pruned, "
+        f"{changed} (re)embedded -> metadata/audio_embeddings.json"
+    )
+    return {"live": len(out), "pruned": len(removed), "changed": changed}
+
+
 def nearest(
     root: Path,
     cfg: Config,

@@ -37,6 +37,9 @@ metadata/audio_embeddings.json
 metadata/stems.json
 metadata/analysis.json
 metadata/analysis.jsonl
+metadata/label_suggestions.json
+metadata/agreement.json
+metadata/vocab_version.json
 mlruns/
 mlruns.db
 mlflow.db

@@ -45,8 +45,11 @@ def page_inventory() -> None:
 
     st.subheader("Duration distribution")
     if "duration" in df:
-        hist, edges = pd.cut(df["duration"], bins=20, retbins=True)
-        st.bar_chart(hist.value_counts().sort_index())
+        import numpy as np
+
+        hist, edges = np.histogram(df["duration"].dropna(), bins=20)
+        hdf = pd.DataFrame({"bin_low_s": edges[:-1], "count": hist})
+        st.bar_chart(hdf.set_index("bin_low_s")["count"])
 
     st.subheader("Records")
     st.dataframe(df, use_container_width=True)
@@ -422,13 +425,147 @@ def page_hygiene() -> None:
         st.dataframe(odf[cols], use_container_width=True, hide_index=True)
 
 
+def page_labels() -> None:
+    """Vocabulary tree (#27), label coverage (#28), suggestions (#31), agreement (#29)."""
+    st.header("🏷️ Labels & vocabulary")
+    from musictrain.labels import VOCAB, VOCAB_VERSION
+    from musictrain.vocab import render_tree
+
+    labels_csv = ROOT / "metadata" / "labels.csv"
+    df = pd.read_csv(labels_csv) if labels_csv.exists() else None
+
+    c1, c2 = st.columns(2)
+    c1.metric("Vocab version", f"v{VOCAB_VERSION}")
+    c2.metric("Labeled tracks", len(df) if df is not None else 0)
+
+    with st.expander("🌳 Vocabulary tree", expanded=False):
+        st.code(render_tree(), language=None)
+
+    # -- label coverage (#28) ------------------------------------------------
+    st.subheader("📈 Label coverage")
+    if df is None:
+        st.info("No labels.csv yet — run `musictrain labels` to scaffold one.")
+    else:
+        import csv as _csv
+
+        for dim in ("genre", "mood", "instruments", "section"):
+            used: dict = {}
+            for cell in df[dim].dropna().astype(str):
+                for token in _csv.reader([cell.replace("|", ",").replace(";", ",")]).__next__():
+                    t = token.strip()
+                    if t:
+                        used[t] = used.get(t, 0) + 1
+            vocab = VOCAB.get(dim, set())
+            missing = sorted(vocab - set(used))
+            st.caption(f"{dim} — {len(used)}/{len(vocab)} terms used")
+            if used:
+                st.bar_chart(pd.Series(dict(sorted(used.items(), key=lambda kv: -kv[1])[:12])))
+            if missing:
+                with st.expander(f"Unused {dim} terms ({len(missing)})"):
+                    st.write(", ".join(missing))
+
+    # -- auto-suggestions (#31) ---------------------------------------------
+    st.subheader("💡 Label suggestions")
+    sug = _read_json("label_suggestions.json")
+    if not sug:
+        st.info("No suggestions yet — run `musictrain suggest --query <file>`.")
+    else:
+        st.caption(f"Query: {sug.get('query')}")
+        for dim, props in (sug.get("vocab_proposals") or {}).items():
+            if props:
+                st.caption(dim)
+                st.dataframe(pd.DataFrame(props), hide_index=True, use_container_width=True)
+        neigh = sug.get("labeled_neighbors") or []
+        if neigh:
+            st.caption("Nearest labeled neighbors")
+            rows = []
+            for n in neigh:
+                lab = n.get("labels") or {}
+                rows.append(
+                    {
+                        "path": n["path"],
+                        "similarity": n["similarity"],
+                        "genre": lab.get("genre", ""),
+                        "mood": lab.get("mood", ""),
+                        "instruments": lab.get("instruments", ""),
+                    }
+                )
+            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    # -- inter-annotator agreement (#29) ------------------------------------
+    st.subheader("🤝 Annotator agreement")
+    agr = _read_json("agreement.json")
+    if not agr:
+        st.info("No agreement report yet — run `musictrain agree --a A.csv --b B.csv`.")
+    else:
+        ov = agr.get("overall", {})
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Shared tracks", agr.get("shared_tracks", 0))
+        a2.metric("Exact agreement", f"{ov.get('exact_agreement', 0):.0%}")
+        a3.metric("Cohen's kappa", f"{ov.get('kappa', 0):+.2f}")
+        fields = agr.get("fields", {})
+        if fields:
+            fdf = pd.DataFrame(fields).T.reset_index().rename(columns={"index": "field"})
+            fdf["exact_agreement"] = (fdf["exact_agreement"] * 100).round(0).astype(int).astype(str) + "%"
+            st.dataframe(fdf, hide_index=True, use_container_width=True)
+        dis = agr.get("disagreements") or []
+        if dis:
+            with st.expander(f"Sample disagreements ({len(dis)})"):
+                st.dataframe(pd.DataFrame(dis), hide_index=True, use_container_width=True)
+
+
+def page_promptbuilder() -> None:
+    """Interactive prompt builder that assembles prompts from the vocabulary (#30)."""
+    st.header("🪄 Prompt builder")
+    st.caption(
+        "Pick controlled-vocabulary tags; the prompt is assembled in the same "
+        "shape as the training labels and eval set."
+    )
+    from musictrain.labels import VOCAB
+    from musictrain.promptbuilder import build_prompt
+
+    cfg = load_cfg()
+    c1, c2 = st.columns(2)
+    with c1:
+        section = st.selectbox("Section", sorted(VOCAB["section"]), index=3)  # chorus
+        genre = st.selectbox("Genre", sorted(VOCAB["genre"]), index=0)  # melodic trap
+        bpm = st.number_input("BPM", min_value=40.0, max_value=220.0, value=140.0, step=1.0)
+        key = st.text_input("Key", value="A minor")
+    with c2:
+        mood = st.multiselect("Mood", sorted(VOCAB["mood"]), default=["dark", "emotional"])
+        instruments = st.multiselect(
+            "Instruments",
+            sorted(VOCAB["instruments"]),
+            default=["piano", "808 bass", "trap hi-hats"],
+        )
+        energy = st.slider("Energy", 0.0, 1.0, 0.7, 0.05)
+        role = st.text_input("Narrative role", value="")
+
+    assembled = build_prompt(
+        section=section, genre=genre, mood=mood, instruments=instruments,
+        bpm=bpm, key=key, energy=energy, role=role or None,
+    )
+    prompt = st.text_area("Prompt", value=assembled, height=90)
+    st.code(prompt, language=None)
+
+    if st.button("Generate with MusicGen", type="primary"):
+        from musictrain.inference import generate
+
+        with st.spinner("Generating (can take a minute on MPS)…"):
+            result = generate(cfg, prompt, out_dir=ROOT / "outputs")
+        st.success(f"Saved {result['path']} ({result['duration']}s)")
+        st.audio(str(result["path"]))
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
     "🏷️ Metadata": page_features,
     "✂️ Segment & Split": page_split,
     "🎛️ Generate": page_generate,
+    "🪄 Prompt builder": page_promptbuilder,
     "📏 Check BPM": page_check,
+    "🏷️ Labels": page_labels,
     "📊 Compare": page_compare,
     "🧹 Hygiene": page_hygiene,
 }

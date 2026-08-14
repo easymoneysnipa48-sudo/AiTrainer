@@ -106,6 +106,41 @@ musictrain labels --check    # validate vocabulary + required fields
 See `metadata/CHECKLIST.md` for the per-track checklist and the controlled
 vocabulary (editable in `musictrain/labels.py`).
 
+## Labeling workflow
+
+Phase 4 keeps the controlled vocabulary consistent and makes labeling faster:
+
+```bash
+musictrain vocab                      # print the hierarchical vocabulary tree (#27)
+musictrain vocab --version            # current vocabulary version
+musictrain vocab --migrate rename.json            # rename terms across labels.csv atomically (#32)
+musictrain agree --a A.csv --b B.csv             # inter-annotator agreement -> agreement.json (#29)
+musictrain suggest --query track.wav --top 5     # CLAP tag proposals + labeled neighbors (#31)
+musictrain prompt --section chorus --genre "melodic trap" --mood dark --bpm 140 --key "A minor"  # (#30)
+musictrain labels --notes             # flag broad parent terms ("808 bass" when "sub bass" fits)
+```
+
+* **Hierarchical vocab** — `labels.py` gains `HIERARCHY` (parent → children,
+e.g. `808 bass → sub bass`) and `VOCAB_VERSION`. `musictrain vocab` renders the
+tree; `labels --check` still enforces the flat term list, and `--notes` adds
+soft suggestions to prefer specific children.
+* **Versioned migration (#32)** — `--migrate` takes a JSON map (`{"genre":
+{"trap": "melodic trap"}}` or a flat map applied to all fields), rewrites the
+CSV with a timestamped `.bak` backup, and stamps
+`metadata/vocab_version.json` so old results stay attributable.
+* **Annotator agreement (#29)** — percent agreement + Cohen's kappa per field
+(genre/mood/instruments/section/section_type) over shared `source_id`s, plus a
+sample of disagreements.
+* **Auto-suggest (#31)** — CLAP tag proposals per dimension plus the nearest
+labeled neighbors from the embedding cache, so you can copy labels from a
+known track instead of guessing.
+* **Prompt builder (#30)** — assemble a generation prompt from vocabulary
+selections in the same shape as the training labels; the 🪄 *Prompt builder*
+dashboard page makes this clickable.
+
+The 🏷️ *Labels* dashboard page surfaces all of it: vocab tree + version, per-
+dimension coverage (used vs. unused terms, #28), suggestions, and agreement.
+
 ## Dataset hygiene
 
 Before training, sweep the corpus for junk and leakage:

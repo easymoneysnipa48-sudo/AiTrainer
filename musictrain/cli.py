@@ -166,7 +166,7 @@ def cmd_infer(args) -> int:
 
 
 def cmd_labels(args) -> int:
-    from .labels import check, scaffold
+    from .labels import check, hierarchy_notes, scaffold
 
     cfg = _build_config(args)
     path = Path(args.file) if args.file else cfg.project_root / "metadata" / "labels.csv"
@@ -179,7 +179,78 @@ def cmd_labels(args) -> int:
             return 1
         console.ok("Labels CSV is valid.")
         return 0
+    if args.notes:
+        notes = hierarchy_notes(path)
+        if notes:
+            console.info(f"{len(notes)} hierarchy suggestion(s):")
+            for n in notes:
+                console.info("  - " + n)
+        else:
+            console.ok("No broad parent terms used — hierarchy is clean.")
+        return 0
     scaffold(cfg.project_root)
+    return 0
+
+
+def cmd_vocab(args) -> int:
+    from .labels import VOCAB_VERSION, VOCAB_VERSION_NOTES
+    from .vocab import migrate, render_tree
+
+    cfg = _build_config(args)
+    if args.migrate:
+        labels_path = (
+            Path(args.labels)
+            if args.labels
+            else cfg.project_root / "metadata" / "labels.csv"
+        )
+        migrate(cfg.project_root, labels_path, Path(args.migrate), backup=not args.no_backup)
+        return 0
+    if args.version:
+        console.info(f"vocabulary version: v{VOCAB_VERSION}")
+        console.info(VOCAB_VERSION_NOTES)
+        return 0
+    print(render_tree())
+    return 0
+
+
+def cmd_agree(args) -> int:
+    from .agreement import agreement
+
+    cfg = _build_config(args)
+    agreement(Path(args.a).resolve(), Path(args.b).resolve(), cfg.project_root)
+    return 0
+
+
+def cmd_suggest(args) -> int:
+    from .suggest import suggest
+
+    cfg = _build_config(args)
+    report = suggest(
+        cfg.project_root, cfg, Path(args.query).resolve(), top_k=args.top, which=args.dir
+    )
+    return 0 if report else 1
+
+
+def cmd_prompt(args) -> int:
+    from .promptbuilder import build_prompt
+
+    prompt = build_prompt(
+        section=args.section,
+        genre=args.genre,
+        mood=args.mood,
+        instruments=args.instruments,
+        bpm=args.bpm,
+        key=args.key,
+        energy=args.energy,
+        role=args.role,
+    )
+    if not prompt:
+        console.error(
+            "Nothing to build — provide at least one of --section/--genre/"
+            "--mood/--instruments/--bpm/--key."
+        )
+        return 1
+    print(prompt)
     return 0
 
 
@@ -457,8 +528,63 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("labels", help="Scaffold or validate the labels CSV")
     add_common(sp)
     sp.add_argument("--check", action="store_true", help="Validate instead of scaffolding")
+    sp.add_argument("--notes", action="store_true", help="Show broad-parent hierarchy suggestions")
     sp.add_argument("--file", default=None, help="Path to labels CSV (default metadata/labels.csv)")
     sp.set_defaults(func=cmd_labels)
+
+    # vocab
+    sp = sub.add_parser(
+        "vocab", help="Show the hierarchical vocabulary tree or migrate terms (#27, #32)"
+    )
+    add_common(sp)
+    sp.add_argument("--version", action="store_true", help="Show the vocabulary version")
+    sp.add_argument(
+        "--migrate", default=None, metavar="RENAME_MAP.json",
+        help="Apply a term rename map to the labels CSV (#32)",
+    )
+    sp.add_argument(
+        "--labels", default=None,
+        help="Labels CSV to migrate (default metadata/labels.csv)",
+    )
+    sp.add_argument(
+        "--no-backup", action="store_true",
+        help="Skip the .bak backup before migrating",
+    )
+    sp.set_defaults(func=cmd_vocab)
+
+    # agree
+    sp = sub.add_parser(
+        "agree", help="Inter-annotator agreement between two label files (#29)"
+    )
+    add_common(sp)
+    sp.add_argument("--a", required=True, help="Annotator A labels CSV")
+    sp.add_argument("--b", required=True, help="Annotator B labels CSV")
+    sp.set_defaults(func=cmd_agree)
+
+    # suggest
+    sp = sub.add_parser(
+        "suggest", help="Auto-suggest labels for a track via CLAP (#31)"
+    )
+    add_common(sp)
+    sp.add_argument("--query", required=True, help="Query audio file")
+    sp.add_argument("--dir", default="clean", help="data/<dir> for the neighbor index")
+    sp.add_argument("--top", type=int, default=5, help="Number of neighbors")
+    sp.set_defaults(func=cmd_suggest)
+
+    # prompt
+    sp = sub.add_parser(
+        "prompt", help="Assemble a generation prompt from vocabulary selections (#30)"
+    )
+    add_common(sp)
+    sp.add_argument("--section", default=None)
+    sp.add_argument("--genre", default=None)
+    sp.add_argument("--mood", action="append", default=None)
+    sp.add_argument("--instruments", action="append", default=None)
+    sp.add_argument("--bpm", type=float, default=None)
+    sp.add_argument("--key", default=None)
+    sp.add_argument("--energy", type=float, default=None)
+    sp.add_argument("--role", default=None)
+    sp.set_defaults(func=cmd_prompt)
 
     # check
     sp = sub.add_parser("check", help="Detect BPM drift of generated audio")

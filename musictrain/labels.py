@@ -31,12 +31,12 @@ VOCAB: Dict[str, Set[str]] = {
         "piano", "keys", "piano melody", "guitar loop", "acoustic guitar",
         "electric guitar", "808 bass", "distorted 808", "wobble 808", "sub bass",
         "bass", "808 slides", "strings", "pads", "dark pad", "synths",
-        "synth lead", "drums", "kick", "percussion", "trap hi-hats",
+        "synth lead", "drums", "kick", "percussion", "hi-hats", "trap hi-hats",
         "hi-hat rolls", "open hi-hat", "snare", "clap", "snare roll", "brass",
         "choir", "vocals", "autotune vocals", "vocal chops", "vocal runs",
         "ad-libs", "ad-lib shouts", "triplet flow", "double-time flow",
-        "melodic flow", "organ", "flute", "harp", "bells", "vinyl crackle",
-        "riser",
+        "melodic flow",        "organ", "flute", "harp", "bells", "vinyl crackle",
+        "riser", "guitar", "flow",
     },
     "section": {
         "intro", "verse", "pre-chorus", "chorus", "hook", "bridge", "outro",
@@ -86,6 +86,56 @@ EXAMPLES = [
 ]
 
 ENFORCED_FIELDS = ("genre", "mood", "instruments", "section", "section_type")
+
+# --------------------------------------------------------------------------- #
+# Versioned, hierarchical vocabulary (Phase 4 #27, #32)
+VOCAB_VERSION = 2
+VOCAB_VERSION_NOTES = (
+    "v2: added parent/child hierarchy for genre + instruments; "
+    "v1: initial melodic-trap controlled vocabulary"
+)
+
+# Parent -> children. Parents are *also* valid labels; children are the more
+# specific terms a labeler should prefer when they apply.
+HIERARCHY: Dict[str, Dict[str, Set[str]]] = {
+    "genre": {
+        "trap": {"melodic trap", "southern trap", "drill", "pain music", "emo rap"},
+    },
+    "instruments": {
+        "808 bass": {"distorted 808", "wobble 808", "sub bass", "808 slides"},
+        "vocals": {"autotune vocals", "vocal chops", "vocal runs", "ad-libs", "ad-lib shouts"},
+        "hi-hats": {"trap hi-hats", "hi-hat rolls", "open hi-hat"},
+        "keys": {"piano", "piano melody", "organ", "synth lead"},
+        "guitar": {"acoustic guitar", "electric guitar", "guitar loop"},
+        "drums": {"kick", "snare", "clap", "percussion", "snare roll"},
+        "flow": {"triplet flow", "double-time flow", "melodic flow"},
+    },
+}
+
+# child -> parent, derived so check()/coverage views share one source of truth
+PARENT_OF: Dict[str, Dict[str, str]] = {
+    dim: {child: parent for parent, children in parents.items() for child in children}
+    for dim, parents in HIERARCHY.items()
+}
+
+
+def hierarchy_notes(path: Path) -> List[str]:
+    """Soft suggestions: rows labeling with a broad parent term that has children."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    notes: List[str] = []
+    for i, row in enumerate(csv.DictReader(path.open(newline="")), start=2):
+        sid = (row.get("source_id") or "").strip() or f"row {i}"
+        for dim, parents in HIERARCHY.items():
+            for term in _split(row.get(dim) or ""):
+                if term in parents:
+                    children = sorted(parents[term])
+                    notes.append(
+                        f"row {i} ({sid}): {term!r} has more specific {dim} terms "
+                        f"— consider one of {', '.join(children)}"
+                    )
+    return notes
 
 
 def _split(value: str) -> List[str]:

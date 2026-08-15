@@ -159,17 +159,53 @@ def _theme_css() -> str:
   .stApp, [data-testid="stSidebar"], [data-testid="stMetric"], .stButton > button,
   [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
   [data-testid="stMarkdownContainer"] { transition: background-color .3s ease, color .3s ease, border-color .3s ease; }
+  @media (max-width: 768px) {
+    .mt-header { flex-direction: column; align-items: flex-start; gap: 4px; }
+    [data-testid="stMetric"] { padding: 10px 12px; }
+  }
 </style>
 """
 
 
+_OS_THEME_HTML = """
+<script>
+(function(){
+  var m = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+  var dark = m ? m.matches : true;
+  window.parent.postMessage({type:'streamlit:setComponentValue', value: dark ? 'dark' : 'light'}, '*');
+})();
+</script>
+"""
+
+
+def _os_theme() -> str:
+    """Detect the OS color scheme (feature 67) — one-shot, cached in session state."""
+    cached = st.session_state.get("mt_os_theme")
+    if cached in ("dark", "light"):
+        return cached
+    try:
+        import streamlit.components.v1 as components
+
+        val = components.html(_OS_THEME_HTML, height=0)
+        if val in ("dark", "light"):
+            st.session_state["mt_os_theme"] = val
+            return val
+    except Exception:  # noqa: BLE001
+        pass
+    return "dark"
+
+
 def _toggle_theme() -> None:
-    """Dark/light theme toggle — feature 1 (persisted in session state)."""
-    light = st.session_state.get("mt_theme") == "light"
-    if st.toggle("☀️ Light mode", value=light, key="theme_toggle"):
-        st.session_state["mt_theme"] = "light"
-    else:
-        st.session_state["mt_theme"] = "dark"
+    """Theme selector (dark / light / system) — features 1 & 67."""
+    mode = st.segmented_control(
+        "🎨 Theme", ["dark", "light", "system"],
+        default=st.session_state.get("mt_theme_mode", "dark"),
+        key="mt_theme_mode",
+    )
+    if mode == "system":
+        st.session_state["mt_theme"] = _os_theme()
+    elif mode in ("dark", "light"):
+        st.session_state["mt_theme"] = mode
 
 
 # --------------------------------------------------------------------------- #
@@ -234,13 +270,16 @@ _PALETTE_HTML = """
 <script>
 (function () {
   var PAGES = ["📋 Inventory","🔧 Normalize","🏷️ Metadata","✂️ Segment & Split","🎛️ Generate",
-    "🪄 Prompt builder","📏 Check BPM","🏷️ Labels","📊 Compare","🧹 Hygiene","🏆 Leaderboard","🎧 Listening"];
+    "🪄 Prompt builder","📏 Check BPM","🎬 Visualize","🏷️ Labels","📊 Compare","🧹 Hygiene",
+    "🏆 Leaderboard","📈 Training","🔬 Analytics","🎯 Eval","🎧 Listening","🪵 Logs"];
   var SHORTCUTS = {g:"🎛️ Generate", l:"🏆 Leaderboard", c:"📊 Compare", h:"🧹 Hygiene",
-    i:"📋 Inventory", n:"🔧 Normalize", m:"🏷️ Metadata", b:"📏 Check BPM"};
+    i:"📋 Inventory", n:"🔧 Normalize", m:"🏷️ Metadata", b:"📏 Check BPM",
+    t:"📈 Training", a:"🔬 Analytics", v:"🎬 Visualize", e:"🎯 Eval"};
   var box = document.getElementById("mt-palette");
   var input = document.getElementById("mt-palette-input");
   var results = document.getElementById("mt-palette-results");
   var visible = false;
+  var selected = 0;
 
   function post(label) {
     window.parent.postMessage({type: "streamlit:setComponentValue", value: label}, "*");
@@ -248,24 +287,37 @@ _PALETTE_HTML = """
   function render(filter) {
     var q = (filter || "").toLowerCase();
     var hits = PAGES.filter(function (p) { return p.toLowerCase().indexOf(q) !== -1; });
-    results.innerHTML = hits.map(function (p) {
-      return '<div class="mt-pal-item" style="padding:9px 12px;border-radius:9px;cursor:pointer;color:#eef1fb">'
+    if (selected >= hits.length) selected = Math.max(0, hits.length - 1);
+    results.innerHTML = hits.map(function (p, idx) {
+      var bg = idx === selected ? "background:#5b8cff33;" : "";
+      return '<div class="mt-pal-item" data-i="' + idx + '" style="padding:9px 12px;border-radius:9px;cursor:pointer;color:#eef1fb;' + bg + '">'
         + p + '</div>';
     }).join("");
     var items = results.querySelectorAll(".mt-pal-item");
     items.forEach(function (el) {
       el.addEventListener("click", function () { post(el.textContent); });
     });
+    return hits;
   }
   function toggle(show) {
     visible = show; box.style.display = show ? "block" : "none";
-    if (show) { input.value = ""; render(""); input.focus(); }
+    if (show) { input.value = ""; selected = 0; render(""); input.focus(); }
   }
   document.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); toggle(!visible); return; }
     if (e.key === "Escape") { toggle(false); return; }
+    if (visible) {
+      if (e.key === "ArrowDown") { e.preventDefault(); selected++; render(input.value); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); selected = Math.max(0, selected - 1); render(input.value); return; }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        var hits = render(input.value);
+        if (hits[selected]) post(hits[selected]);
+        return;
+      }
+      render(input.value); return;
+    }
     var tag = (e.target && e.target.tagName) || "";
-    if (visible) { render(input.value); return; }
     if (tag === "INPUT" || tag === "TEXTAREA" || e.ctrlKey || e.metaKey || e.altKey) return;
     if (SHORTCUTS[e.key]) post(SHORTCUTS[e.key]);
   });
@@ -2505,6 +2557,48 @@ def _inspector() -> None:
         st.caption(f"pinned: {len(st.session_state.get('mt_pinned', []))}")
 
 
+# feature 70 — i18n-ready string table (extend with more locales as needed)
+_I18N = {
+    "nav_title": {"en": "MusicTrain", "es": "MusicTrain"},
+    "pinned": {"en": "Pinned", "es": "Fijadas"},
+    "history": {"en": "History", "es": "Historial"},
+    "focus": {"en": "Focus mode", "es": "Modo enfoque"},
+    "theme": {"en": "Theme", "es": "Tema"},
+}
+
+
+def t(key: str) -> str:
+    lang = st.session_state.get("mt_lang", "en")
+    return _I18N.get(key, {}).get(lang, key)
+
+
+def _pipeline_checklist(cfg: Config) -> None:
+    """Feature 65: highlight completed pipeline steps."""
+    steps = [
+        ("inventory", (ROOT / "metadata" / "audio_inventory.json").exists()),
+        ("features", (ROOT / "metadata" / "manifest.jsonl").exists()),
+        ("labels", (ROOT / "metadata" / "labels.csv").exists()),
+        ("split", (ROOT / "data" / "train").exists() or (ROOT / "data" / "val").exists()),
+        ("eval", (ROOT / "metadata" / "eval_results.jsonl").exists()),
+        ("leaderboard", (ROOT / "metadata" / "leaderboard.json").exists()),
+    ]
+    st.caption("  ".join(f"{'✅' if done else '⬜'} {name}" for name, done in steps))
+
+
+def _print_button() -> None:
+    """Feature 68: print / save-as-PDF via the browser."""
+    import streamlit.components.v1 as components
+
+    js = """
+    <button onclick="window.print()"
+      style="width:100%;border-radius:9px;border:1px solid rgba(255,255,255,.2);
+      background:rgba(255,255,255,.06);color:#eef1fb;padding:6px 12px;cursor:pointer;font-size:.8rem">
+      🖨 Print / Save as PDF
+    </button>
+    """
+    components.html(js, height=34)
+
+
 def _nav_ui() -> str:
     """Features 51/53/56: collapsible grouped nav, pinned pages, history dropdown."""
     first = list(PAGES.keys())[0]
@@ -2551,8 +2645,10 @@ def main() -> None:
             _global_search()
             st.markdown("---")
             _sidebar_stats(load_cfg())
+            _pipeline_checklist(load_cfg())
             _sidebar_minimap(load_cfg())
             _last_job_ui()  # feature 39 — replay the last job
+            _print_button()
         _inspector()
         st.markdown("---")
         choice = _nav_ui()

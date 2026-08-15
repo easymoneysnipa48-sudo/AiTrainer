@@ -967,6 +967,61 @@ def cmd_stage(args) -> int:
     return 0
 
 
+def cmd_modelops(args) -> int:
+    from . import modelops as mo
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+    task = args.task
+    (root / "metadata").mkdir(parents=True, exist_ok=True)
+
+    if task == "migrate-aliases":
+        mo.migrate_stages_to_aliases(cfg, args.name)
+        return 0
+    if task == "ab":
+        from .report import load_results
+
+        rows = load_results(root)
+        a = [r["clap_score"] for r in rows
+             if r.get("checkpoint") == args.champion and r.get("clap_score") is not None]
+        b = [r["clap_score"] for r in rows
+             if r.get("checkpoint") == args.challenger and r.get("clap_score") is not None]
+        result = mo.ab_win_rate(a, b, higher_is_better=True)
+        console.ok(json.dumps(result, indent=2))
+        return 0 if result["n"] else 1
+    if task == "auto-promote":
+        mo.auto_promote(cfg, args.candidate, args.baseline)
+        return 0
+    if task == "lineage":
+        mo.record_lineage(cfg, args.parent, args.child, note=args.note or "")
+        return 0
+    if task == "lineage-graph":
+        console.ok(json.dumps(mo.lineage_graph(cfg), indent=2))
+        return 0
+    if task == "checksum":
+        model_dir = Path(args.path).resolve()
+        manifest = mo.checksum_dir(model_dir)
+        (root / "metadata" / "checksum_manifest.json").write_text(json.dumps(manifest, indent=2))
+        console.ok(f"Checksum manifest -> metadata/checksum_manifest.json ({manifest['n_files']} files)")
+        return 0
+    if task == "verify":
+        manifest = json.loads((root / "metadata" / "checksum_manifest.json").read_text())
+        ok = mo.verify_checksum(Path(args.path).resolve(), manifest)
+        console.ok("Checksum verified." if ok else "Checksum MISMATCH.")
+        return 0 if ok else 1
+    if task == "rollback":
+        return 0 if mo.rollback(cfg, args.name).get("rolled_back") else 1
+    if task == "cost-breakdown":
+        out = mo.cost_breakdown(args.model, args.prompts, args.seeds, tokens_per_clip=args.tokens)
+        console.ok(json.dumps(out, indent=2))
+        return 0
+    if task == "lint":
+        return 0 if mo.lint(cfg)["valid"] else 1
+
+    console.error(f"Unknown task: {task}")
+    return 1
+
+
 def cmd_export_eval(args) -> int:
     from .telemetry import export_wandb
 
@@ -998,6 +1053,7 @@ def cmd_alert(args) -> int:
         max_abs_deviation=args.max_dev,
         min_ok_pct=args.min_ok,
         slack_webhook=args.slack_webhook or "",
+        discord_webhook=args.discord_webhook or "",
         smtp_host=args.smtp_host or "",
         smtp_user=args.smtp_user or "",
         smtp_password=args.smtp_password or "",
@@ -1650,6 +1706,33 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--stage", required=True, help="None | Staging | Production | Archived")
     sp.set_defaults(func=cmd_stage)
 
+    # modelops
+    sp = sub.add_parser(
+        "modelops",
+        help="Model-ops tasks: migrate-aliases, ab, auto-promote, lineage, "
+             "lineage-graph, checksum, verify, rollback, cost-breakdown, lint "
+             "(advanced #41-#46, #49-#50)",
+    )
+    add_common(sp)
+    sp.add_argument("--task", required=True,
+                    choices=["migrate-aliases", "ab", "auto-promote", "lineage",
+                             "lineage-graph", "checksum", "verify", "rollback",
+                             "cost-breakdown", "lint"])
+    sp.add_argument("--name", default=None, help="Registered model name (aliases/rollback)")
+    sp.add_argument("--champion", default=None, help="Champion checkpoint (ab)")
+    sp.add_argument("--challenger", default=None, help="Challenger checkpoint (ab)")
+    sp.add_argument("--candidate", default=None, help="Candidate checkpoint (auto-promote)")
+    sp.add_argument("--baseline", default=None, help="Baseline checkpoint (auto-promote)")
+    sp.add_argument("--parent", default=None, help="Parent checkpoint (lineage)")
+    sp.add_argument("--child", default=None, help="Child checkpoint (lineage)")
+    sp.add_argument("--note", default="", help="Lineage note")
+    sp.add_argument("--path", default=None, help="Model dir (checksum/verify)")
+    sp.add_argument("--model", default="musicgen-small", help="Model for cost-breakdown")
+    sp.add_argument("--prompts", type=int, default=44)
+    sp.add_argument("--seeds", type=int, default=3)
+    sp.add_argument("--tokens", type=int, default=256)
+    sp.set_defaults(func=cmd_modelops)
+
     # export-eval
     sp = sub.add_parser("export-eval", help="Push eval results to W&B (or CSV fallback) (#45)")
     add_common(sp)
@@ -1670,6 +1753,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-dev", type=float, default=0.20)
     sp.add_argument("--min-ok", type=float, default=0.5)
     sp.add_argument("--slack-webhook", default="")
+    sp.add_argument("--discord-webhook", default="")
     sp.add_argument("--smtp-host", default="")
     sp.add_argument("--smtp-user", default="")
     sp.add_argument("--smtp-password", default="")

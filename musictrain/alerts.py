@@ -78,6 +78,20 @@ def _slack(webhook: str, text: str) -> bool:
         return False
 
 
+def _discord(webhook: str, text: str) -> bool:
+    """Post a Discord message via a channel webhook (zero deps)."""
+    payload = json.dumps({"content": text}).encode()
+    req = urllib.request.Request(
+        webhook, data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return 200 <= resp.status < 300
+    except Exception as exc:  # noqa: BLE001
+        console.warn(f"Discord webhook failed: {exc}")
+        return False
+
+
 def _email(host: str, port: int, user: str, password: str, to: str, subject: str, body: str) -> bool:
     try:
         msg = EmailMessage()
@@ -101,6 +115,7 @@ def alert(
     max_abs_deviation: float = 0.20,
     min_ok_pct: float = 0.5,
     slack_webhook: str = "",
+    discord_webhook: str = "",
     smtp_host: str = "",
     smtp_port: int = 587,
     smtp_user: str = "",
@@ -129,6 +144,9 @@ def alert(
     if slack_webhook:
         fired = _slack(slack_webhook, text) or fired
         result["channels"].append("slack")
+    if discord_webhook:
+        fired = _discord(discord_webhook, text) or fired
+        result["channels"].append("discord")
     if smtp_host and smtp_user and smtp_to:
         fired = (
             _email(smtp_host, smtp_port, smtp_user, smtp_password, smtp_to,

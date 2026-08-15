@@ -232,6 +232,47 @@ def test_check_folded_octave_reports_folded_deviation(tmp_path, monkeypatch):
     assert "double-time" in report["note"]
 
 
+def test_check_folds_4_over_3_and_2_over_3(tmp_path, monkeypatch):
+    """Triplet-grid folds: detected at 4/3x (96 vs 72) or 2/3x (104 vs 155)
+    of the target must fold to ok, mirroring the octave folds."""
+    from musictrain import evaluate as ev
+
+    cfg = _cfg(tmp_path)
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"x")
+    monkeypatch.setattr(ev, "load_audio", lambda path, sr: (np.zeros(16000, dtype=np.float32), 32000))
+
+    # detected 96 vs target 72 -> 96 * 0.75 = 72 (4/3-time)
+    monkeypatch.setattr(ev, "estimate_bpm", lambda y, sr: 96.0)
+    r = ev.check(cfg, wav, target_bpm=72.0)
+    assert r["status"] == "ok"
+    assert r["folded_bpm"] == 72.0
+    assert r["deviation"] == pytest.approx(0.0, abs=1e-2)
+    assert "4/3-time" in r["note"]
+
+    # detected 104 vs target 155 -> 104 * 1.5 = 156 (2/3-time)
+    monkeypatch.setattr(ev, "estimate_bpm", lambda y, sr: 104.0)
+    r = ev.check(cfg, wav, target_bpm=155.0)
+    assert r["status"] == "ok"
+    assert r["folded_bpm"] == 156.0
+    assert r["deviation"] == pytest.approx(0.0065, abs=1e-3)
+    assert "2/3-time" in r["note"]
+
+
+def test_check_non_foldable_stays_rejected(tmp_path, monkeypatch):
+    """A 1.179x mismatch (e.g. 70.7 vs 60) is not a tempo-ratio multiple and
+    must stay rejected rather than being force-folded."""
+    from musictrain import evaluate as ev
+
+    cfg = _cfg(tmp_path)
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"x")
+    monkeypatch.setattr(ev, "load_audio", lambda path, sr: (np.zeros(16000, dtype=np.float32), 32000))
+    monkeypatch.setattr(ev, "estimate_bpm", lambda y, sr: 70.7)
+    r = ev.check(cfg, wav, target_bpm=60.0)
+    assert r["status"] == "rejected"
+
+
 def test_aggregate_accepts_folded_deviation(tmp_path):
     """A seed whose check folded (status ok, small deviation) must not be
     auto-rejected on the raw double-time deviation."""

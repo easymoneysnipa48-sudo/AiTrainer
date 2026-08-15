@@ -62,6 +62,11 @@ def check(
             (2.0, "half-time (2x octave)"),
             (0.25, "quadruple-time (0.25x octave)"),
             (4.0, "quarter-time (4x octave)"),
+            # triplet-grid ambiguity: beat trackers subdividing into triples
+            # read 4/3-time (detected at 1.333x -> fold 0.75x) and 2/3-time
+            # (detected at 0.667x -> fold 1.5x) — common on swung/triplet flows
+            (0.75, "4/3-time (0.75x triplet)"),
+            (1.5, "2/3-time (1.5x triplet)"),
         )
         for factor, label in folds:
             folded = detected * factor

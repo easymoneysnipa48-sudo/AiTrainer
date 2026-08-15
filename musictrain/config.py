@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, List, Optional, get_origin, get_type_hints
+from typing import Any, Dict, List, Optional, get_origin, get_type_hints
 
 import yaml
 

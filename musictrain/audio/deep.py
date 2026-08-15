@@ -174,7 +174,7 @@ def stereo_profile(path: Path) -> Optional[dict]:
     import soundfile as sf
 
     try:
-        audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
+        audio, _sr = sf.read(str(path), dtype="float32", always_2d=True)
     except Exception:  # noqa: BLE001
         return None
     if audio.shape[1] < 2:

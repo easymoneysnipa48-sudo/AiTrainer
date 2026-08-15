@@ -72,7 +72,6 @@ def resynth(
     if not manifest:
         return []
 
-    target = root / "data" / which
     out_root = root / "data" / out_dir
     out_root.mkdir(parents=True, exist_ok=True)
 

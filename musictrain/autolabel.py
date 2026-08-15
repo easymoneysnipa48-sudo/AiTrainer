@@ -49,7 +49,7 @@ def autolabel(root: Path, cfg: Config, which: str = "clean", limit: int = 0) -> 
 
     dims = ["genre", "mood", "instruments"]
     device = resolve_device(cfg.autolabel.device)
-    fe, tok, model, device = load_clap(cfg.clap.model_name, device)
+    _fe, tok, model, device = load_clap(cfg.clap.model_name, device)
 
     console.info("Embedding vocabulary terms…")
     text_emb: Dict[Tuple[str, str], np.ndarray] = {}

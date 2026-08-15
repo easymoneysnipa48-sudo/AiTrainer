@@ -17,7 +17,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import console
 from .config import Config, InferenceCfg
+from .logging import get_logger
 from .util import now_stamp, sanitize_slug
+
+log = get_logger("inference")
 
 TOKENS_PER_SECOND = 50  # MusicGen codec rate at 32 kHz
 
@@ -155,12 +158,12 @@ def _sample_rate(model) -> int:
     """Recover the audio sample rate from the model config, with fallbacks."""
     try:
         return int(model.config.audio_encoder.sampling_rate)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log.debug("no sampling_rate on model config (%s); trying codec_sample_rate", exc)
     try:
         return int(model.config.audio_encoder.codec_sample_rate)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        log.debug("no codec_sample_rate on model config (%s); defaulting to 32 kHz", exc)
     return 32000
 
 

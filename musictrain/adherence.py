@@ -352,11 +352,9 @@ def multiple_comparison(p_values: Sequence[Optional[float]],
     # BH-FDR step-up
     order = sorted(range(m), key=lambda i: ps[i])
     reject = [False] * m
-    prev = None
     for rank, idx in enumerate(order):
         thresh = (rank + 1) / m * alpha
         reject[idx] = ps[idx] <= thresh
-        prev = reject[idx]
     bh = {f"test_{i}": {"p": ps[i], "reject": reject[i]} for i in range(m)}
     return {
         "n": m,

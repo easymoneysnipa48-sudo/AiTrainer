@@ -26,10 +26,11 @@ TAG_FIELDS = ("genre", "mood", "instruments", "section", "section_type")
 def load_rows(path: Path) -> Dict[str, dict]:
     """Rows keyed by source_id (duplicate source_ids collapse to the last)."""
     rows: Dict[str, dict] = {}
-    for row in csv.DictReader(Path(path).open(newline="")):
-        sid = (row.get("source_id") or "").strip()
-        if sid:
-            rows[sid] = row
+    with Path(path).open(newline="") as fh:
+        for row in csv.DictReader(fh):
+            sid = (row.get("source_id") or "").strip()
+            if sid:
+                rows[sid] = row
     return rows
 
 

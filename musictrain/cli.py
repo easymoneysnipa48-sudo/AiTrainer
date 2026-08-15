@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import __version__, console
 from .config import Config
+from .logging import get_logger, setup as setup_logging
 from .paths import ensure_layout
 
 
@@ -130,7 +131,12 @@ def cmd_sweep(args) -> int:
 
     cfg = _build_config(args)
     if args.kind == "ensemble":
-        rows, best = run_ensemble(cfg, args.prompt, n=args.n, generator=None if not args.no_cache else None)
+        generator = None
+        if args.no_cache:
+            from .inference import generate
+
+            generator = generate  # bypass the deterministic cache
+        _rows, best = run_ensemble(cfg, args.prompt, n=args.n, generator=generator)
         return 0 if best else 1
     if args.kind == "chain":
         chain = chain_generations(cfg, args.prompt, steps=args.n)
@@ -139,7 +145,7 @@ def cmd_sweep(args) -> int:
     seeds = [int(x) for x in args.seeds.split(",") if x.strip()]
     if args.kind == "seeds":
         guidance = [cfg.inference.guidance_scale]
-    rows, best = run_sweep(cfg, args.prompt, guidance, seeds)
+    _rows, best = run_sweep(cfg, args.prompt, guidance, seeds)
     return 0 if best else 1
 
 
@@ -421,7 +427,7 @@ def cmd_eval(args) -> int:
     cfg = _build_config(args)
     if args.no_clap:
         cfg.clap.enabled = False
-    run_eval(
+    results = run_eval(
         cfg,
         limit=args.limit,
         check_bpm=not args.no_check,
@@ -429,7 +435,7 @@ def cmd_eval(args) -> int:
         seeds=args.seeds,
         incremental=getattr(args, "incremental", False),
     )
-    return 0
+    return 0 if results else 1
 
 
 def cmd_score(args) -> int:
@@ -913,7 +919,6 @@ def cmd_modelcard(args) -> int:
 def cmd_early_stop(args) -> int:
     from .monitor import early_stop
 
-    cfg = _build_config(args)
     if not args.series:
         console.error("Pass --series as comma-separated CLAP values, e.g. 0.30,0.32,0.31")
         return 2
@@ -1111,10 +1116,14 @@ def build_parser() -> argparse.ArgumentParser:
     def add_common(sp):
         sp.add_argument("--root", default=".", help="Project root (default: cwd)")
         sp.add_argument("--config", default=None, help="Path to YAML config")
+        sp.add_argument("--verbose", action="store_true", help="DEBUG logging + tracebacks")
+        sp.add_argument("--quiet", action="store_true", help="Only warnings/errors on console")
 
     # init
     sp = sub.add_parser("init", help="Create project layout + default config")
     sp.add_argument("--root", default=".")
+    sp.add_argument("--verbose", action="store_true", help="DEBUG logging + tracebacks")
+    sp.add_argument("--quiet", action="store_true", help="Only warnings/errors on console")
     sp.set_defaults(func=cmd_init)
 
     # config
@@ -1790,11 +1799,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    root = Path(getattr(args, "root", ".") or ".")
+    verbose = bool(getattr(args, "verbose", False))
+    quiet = bool(getattr(args, "quiet", False))
+    setup_logging(root=root, verbose=verbose, quiet=quiet)
+    log = get_logger("cli")
+
     try:
         return args.func(args)
     except KeyboardInterrupt:
         console.error("Interrupted.")
         return 130
+    except Exception as exc:  # noqa: BLE001 - last-resort guard
+        # Full traceback goes to the log file (and to the console in verbose
+        # mode, where the handler is at DEBUG level).
+        log.exception("command %r failed", getattr(args, "command", "?"))
+        console.error(f"{type(exc).__name__}: {exc}")
+        return 1
 
 
 if __name__ == "__main__":

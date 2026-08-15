@@ -11,16 +11,19 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import pandas as pd
 import streamlit as st
 
 from musictrain.config import Config
+from musictrain.logging import get_logger, setup as setup_logging
 
 st.set_page_config(page_title="MusicTrain", page_icon="🎵", layout="wide")
 
 ROOT = Path.cwd()
+setup_logging(ROOT)
+log = get_logger("dashboard")
 
 
 # feature 37 — curated prompt templates (section/energy/BPM angle)
@@ -492,6 +495,7 @@ def _run_job(label: str, fn: Callable, *args, **kwargs):
         try:
             out["result"] = fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - surfaced to the caller
+            log.exception("dashboard job %r failed", label)
             out["error"] = exc
 
     thread = threading.Thread(target=_worker, daemon=True)
@@ -536,6 +540,7 @@ def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
         try:
             out["result"] = fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001
+            log.exception("dashboard cancellable job %r failed", label)
             out["error"] = exc
 
     _record_job(label, fn, args, kwargs)
@@ -604,6 +609,7 @@ def _run_live(label: str, fn: Callable, *args, progress_kw: str = "progress",
         try:
             state["result"] = fn(*args, **cb, **kwargs)
         except Exception as exc:  # noqa: BLE001
+            log.exception("dashboard live job %r failed", label)
             state["error"] = exc
 
     _record_job(label, fn, args, kwargs)
@@ -1970,7 +1976,7 @@ def page_listening() -> None:
             )
             ratings[key] = {"rating": rating, "note": note}
 
-    c_save, c_undo = st.columns([1, 1])
+    c_save, _c_undo = st.columns([1, 1])
     if c_save.button("Save ratings", type="primary", key="lst_save"):
         saved = 0
         before = sum(1 for _ in ratings_path.open())
@@ -2039,7 +2045,7 @@ def _ab_compare(rows: list, picked: list, existing: dict, ratings_path: Path) ->
                             st.session_state[f"ab_{i}_{ck}"] = v
                     ratings[key] = {"rating": chosen, "note": prev.get("note", "")}
 
-    c_save, c_undo = st.columns([1, 1])
+    c_save, _c_undo = st.columns([1, 1])
     if c_save.button("Save A/B ratings", type="primary", key="ab_save"):
         saved = 0
         before = sum(1 for _ in ratings_path.open())
@@ -2192,10 +2198,15 @@ def page_eval() -> None:
     if sched:
         st.caption(f"⏱ Armed: auto-run every {int(nmin)} min (fires on page refresh while this page is open).")
 
-    st.caption(
-        f"{len(prompts)} prompts in the set · current result file has "
-        f"{sum(1 for _ in open(ROOT / 'metadata' / 'eval_results.jsonl')) if (ROOT / 'metadata' / 'eval_results.jsonl').exists() else 0} rows"
-    )
+    _evf = ROOT / "metadata" / "eval_results.jsonl"
+    _nrows = 0
+    if _evf.exists():
+        try:
+            with _evf.open() as _fh:
+                _nrows = sum(1 for _ in _fh)
+        except OSError:
+            _nrows = 0
+    st.caption(f"{len(prompts)} prompts in the set · current result file has {_nrows} rows")
 
     if st.button("▶ Start eval", type="primary", key="ev_run"):
         # protect the current baseline before run_eval overwrites the result file

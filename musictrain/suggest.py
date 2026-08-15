@@ -42,7 +42,7 @@ def _vocab_proposals(cfg: Config, audio_emb: np.ndarray, top_k: int) -> Dict[str
     from .labels import VOCAB
     from .similarity import load_clap
 
-    fe, tok, model, device = load_clap(cfg.clap.model_name, cfg.clap.device)
+    _fe, tok, model, device = load_clap(cfg.clap.model_name, cfg.clap.device)
     proposals: Dict[str, List[dict]] = {}
     for dim in ("genre", "mood", "instruments"):
         scored = []
@@ -107,7 +107,7 @@ def suggest(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2))
 
-    console.ok(f"Wrote suggestions -> metadata/label_suggestions.json")
+    console.ok("Wrote suggestions -> metadata/label_suggestions.json")
     for dim, props in vocab.items():
         console.info(
             f"{dim:12s} "

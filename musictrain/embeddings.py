@@ -110,7 +110,6 @@ def refresh(root: Path, cfg: Config, which: str = "clean", limit: int = 0) -> Di
 
     out: Dict[str, np.ndarray] = {}
     changed = 0
-    added = 0
     for i, p in enumerate(files, 1):
         if limit and i > limit:
             break

@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-import numpy as np
-
 from . import console
 from .audio.features import estimate_bpm, load_audio
 from .config import Config

@@ -73,7 +73,7 @@ def separate_stems(root: Path, cfg: Config, which: str = "clean", limit: int = 0
         stem_dir = out_root / path.stem
         stem_dir.mkdir(parents=True, exist_ok=True)
         try:
-            origin, stems = separator.separate_audio_file(str(path))
+            _origin, stems = separator.separate_audio_file(str(path))
             rec = {"track": str(path.relative_to(root)), "stems": {}}
             for name, source in stems.items():
                 demucs.api.save_audio(source, str(stem_dir / f"{name}.wav"), samplerate=separator.samplerate)

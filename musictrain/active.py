@@ -64,7 +64,7 @@ def rank_unlabeled(
         console.error(f"Directory not found: {target}")
         return []
 
-    fe, tok, model, device = load_clap(cfg.clap.model_name, cfg.clap.device)
+    _fe, tok, model, device = load_clap(cfg.clap.model_name, cfg.clap.device)
     # vocabulary embeddings once (across genre/mood/instruments dims)
     vocab_terms = [t for dim in VOCAB.values() for t in dim]
     vocab_embs = [_embed_text(tok, model, device, t) for t in vocab_terms]

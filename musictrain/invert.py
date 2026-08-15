@@ -94,7 +94,7 @@ def _clap_retrieve(cfg: Config, path: Path, library: List[str], top_k: int) -> L
     from .embeddings import embed_audio
 
     device = resolve_device(cfg.clap.device)
-    fe, tok, model, device = load_clap(cfg.clap.model_name, device)
+    _fe, tok, model, device = load_clap(cfg.clap.model_name, device)
 
     aemb = embed_audio(cfg, path)
     aemb = aemb / (np.linalg.norm(aemb) + 1e-12)

@@ -31,6 +31,9 @@ import numpy as np
 
 from . import console
 from .config import Config
+from .logging import get_logger
+
+log = get_logger("finetune")
 
 
 def _pairs(root: Path, limit: int = 0) -> List[Tuple[Path, str]]:
@@ -216,8 +219,6 @@ def train(
         console.error("LoRA fine-tuning needs `pip install peft`.")
         return {}
 
-    from transformers import AutoModelForTextToWaveform, AutoProcessor
-
     from .inference import load_model, resolve_device
 
     device = resolve_device(cfg.inference.device)
@@ -263,7 +264,6 @@ def train(
 
     total_steps = steps * max(len(pairs) // batch_size, 1)
     losses: List[float] = []
-    sr = getattr(model.config.audio_encoder, "sampling_rate", 32000)
     step_idx = 0
 
     for step in range(1, steps + 1):
@@ -337,8 +337,8 @@ def train(
 
             for i, g in enumerate(cfg_points):
                 log_metric(cfg, "cfg_sweep_point", g, step=i)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not log CFG sweep points to MLflow: %s", exc)
 
     out_dir = Path(out_dir) if out_dir else cfg.project_root / "adapters"
     out_dir.mkdir(parents=True, exist_ok=True)

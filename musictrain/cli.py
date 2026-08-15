@@ -455,6 +455,14 @@ def cmd_metrics(args) -> int:
     return 0 if record else 1
 
 
+def cmd_adherence(args) -> int:
+    from .adherence import run
+
+    cfg = _build_config(args)
+    record = run(cfg.project_root, cfg, limit=args.limit)
+    return 0 if record else 1
+
+
 def cmd_significance(args) -> int:
     from .significance import compare, from_checkpoints, load_results, meta_analyze
 
@@ -1185,6 +1193,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--fad", choices=["clap", "vggish"], default="clap",
                     help="FAD embedding: clap (default) or vggish via fadtk (advanced #1)")
     sp.set_defaults(func=cmd_metrics)
+
+    # adherence
+    sp = sub.add_parser(
+        "adherence",
+        help="Adherence metrics: onset alignment, key, structure, duration, "
+             "instruments, seed diversity, reliability, genre gates (advanced eval #1-#10)",
+    )
+    add_common(sp)
+    sp.add_argument("--limit", type=int, default=0, help="Limit unique clips scored")
+    sp.set_defaults(func=cmd_adherence)
 
     # significance
     sp = sub.add_parser(

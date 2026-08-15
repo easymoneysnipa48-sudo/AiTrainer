@@ -159,6 +159,15 @@ class EvalCfg:
     max_abs_deviation: float = 0.20    # |deviation| above this -> reject
     per_tag_clap: bool = True          # score each tag phrase separately (#46)
     significance_alpha: float = 0.05   # p-value cutoff for #44 verdicts
+    # advanced eval #10: per-genre CLAP/deviation gates (fallback: "default").
+    genre_gates: dict = field(
+        default_factory=lambda: {
+            "default": {"min_clap": 0.30, "max_abs_deviation": 0.20},
+            "melodic trap": {"min_clap": 0.32, "max_abs_deviation": 0.15},
+            "ambient": {"min_clap": 0.22, "max_abs_deviation": 0.30},
+            "orchestral": {"min_clap": 0.28, "max_abs_deviation": 0.25},
+        }
+    )
 
 
 @dataclass

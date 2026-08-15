@@ -79,6 +79,13 @@ def build(cfg: Config) -> dict:
         fidelity = max(0.0, 1.0 - (mean_abs_dev / 0.20)) if mean_abs_dev is not None else 0.0
         score = round(0.4 * ok_pct + 0.3 * (mean_clap or 0.0) + 0.3 * fidelity, 4)
 
+        # bootstrap CI around the composite score (advanced eval #9)
+        score_ci = None
+        if len(cres) >= 3:
+            from .adherence import bootstrap_score_ci
+
+            score_ci = bootstrap_score_ci(cres)
+
         entries.append(
             {
                 "checkpoint": checkpoint,
@@ -89,6 +96,7 @@ def build(cfg: Config) -> dict:
                 "mean_human_rating": mean_human,
                 "clap_per_tag": per_tag,
                 "score": score,
+                "score_ci": score_ci,
             }
         )
 

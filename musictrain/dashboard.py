@@ -76,7 +76,8 @@ _DARK_CSS = """
     border-radius: 14px !important; background: rgba(255,255,255,0.025) !important; }
   .stTabs [data-baseweb="tab-list"] { gap: 6px; }
   .stTabs [data-baseweb="tab"] { border-radius: 10px 10px 0 0; padding: 8px 18px; }
-  .mt-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .mt-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 50; background: rgba(15,18,32,.92); backdrop-filter: blur(8px); }
   .mt-header .mt-emoji { font-size: 1.9rem; }
   .mt-header .mt-title { font-size: 1.6rem; font-weight: 700; color: #f2f4fb; letter-spacing: -0.02em; }
   .mt-caption { color: #9aa3c0; margin-bottom: 18px; }
@@ -127,7 +128,8 @@ _LIGHT_CSS = """
   [data-testid="stExpander"] { border: 1px solid rgba(0,0,0,0.08); border-radius: 12px; background: rgba(255,255,255,0.6); }
   [data-testid="stVerticalBlockBorderWrapper"] { border: 1px solid rgba(0,0,0,0.07) !important;
     border-radius: 14px !important; background: rgba(255,255,255,0.7) !important; }
-  .mt-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .mt-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 50; background: rgba(244,246,251,.92); backdrop-filter: blur(8px); }
   .mt-header .mt-emoji { font-size: 1.9rem; }
   .mt-header .mt-title { font-size: 1.6rem; font-weight: 700; color: #111827; letter-spacing: -0.02em; }
   .mt-caption { color: #5b6478; margin-bottom: 18px; }
@@ -2451,6 +2453,88 @@ PAGES = {
 }
 
 
+# feature 51 — collapsible nav groups
+_NAV_GROUPS = [
+    ("📁 Data", ["📋 Inventory", "🔧 Normalize", "🏷️ Metadata", "✂️ Segment & Split"]),
+    ("🎛️ Generate", ["🎛️ Generate", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize"]),
+    ("🏷️ Curate", ["🏷️ Labels", "🧹 Hygiene", "🎧 Listening"]),
+    ("📊 Evaluate", ["📊 Compare", "🏆 Leaderboard", "🎯 Eval"]),
+    ("🔬 Model", ["📈 Training", "🔬 Analytics"]),
+    ("🪵 System", ["🪵 Logs"]),
+]
+
+
+def _sidebar_minimap(cfg: Config) -> None:
+    """Feature 60: tiny section x BPM coverage heatmap in the sidebar."""
+    import altair as alt
+
+    ev = ROOT / "metadata" / "eval_results.jsonl"
+    if not ev.exists():
+        return
+    rows = []
+    for line in ev.open():
+        try:
+            r = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        sec = r.get("section")
+        bpm = r.get("bpm_target")
+        if sec and bpm:
+            rows.append({"section": sec, "bpm": float(bpm)})
+    if len(rows) < 2:
+        return
+    df = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(df)
+        .mark_rect()
+        .encode(x=alt.X("bpm:Q", bin=alt.Bin(maxbins=12), title=None),
+                y=alt.Y("section:N", title=None, sort=None),
+                color=alt.Color("count()", scale=alt.Scale(scheme="blues"), legend=None))
+        .properties(height=90)
+    )
+    st.altair_chart(chart, width="stretch")
+    st.caption("🧭 prompt coverage (section × BPM)")
+
+
+def _inspector() -> None:
+    """Feature 58: compact inspector drawer of session state."""
+    with st.expander("ℹ️ Inspector"):
+        st.caption(f"page: `{st.session_state.get('nav', '—')}`")
+        st.caption(f"theme: `{st.session_state.get('mt_theme', 'dark')}`")
+        st.caption(f"history: {len(st.session_state.get('mt_history', []))} pages")
+        st.caption(f"pinned: {len(st.session_state.get('mt_pinned', []))}")
+
+
+def _nav_ui() -> str:
+    """Features 51/53/56: collapsible grouped nav, pinned pages, history dropdown."""
+    first = list(PAGES.keys())[0]
+    choice = st.session_state.get("nav", first)
+
+    pinned = st.multiselect("⭐ Pinned", list(PAGES.keys()), key="mt_pinned")
+    for page in pinned:
+        if st.button(f"📌 {page}", key=f"pin_{page}", width="stretch"):
+            st.session_state["nav"] = page
+            st.rerun()
+
+    history = st.session_state.get("mt_history", [])
+    if history:
+        back = st.selectbox("🕘 History", ["—"] + list(reversed(history)), key="hist_sel")
+        if back != "—":
+            st.session_state["nav"] = back
+            st.session_state["hist_sel"] = "—"
+            st.rerun()
+
+    st.markdown("---")
+    for group, pages in _NAV_GROUPS:
+        with st.expander(group):
+            for page in pages:
+                label = f"▸ {page}" if page == choice else page
+                if st.button(label, key=f"grp_{page}", width="stretch"):
+                    st.session_state["nav"] = page
+                    st.rerun()
+    return choice
+
+
 def main() -> None:
     st.markdown(_theme_css(), unsafe_allow_html=True)
     _command_palette()
@@ -2460,13 +2544,18 @@ def main() -> None:
         st.markdown("### 🎵 MusicTrain")
         st.caption(f"Project: `{ROOT.name}`")
         _toggle_theme()
-        _quicknav()
-        _global_search()
+        st.toggle("🎯 Focus mode", value=st.session_state.get("mt_focus", False), key="mt_focus_toggle")
+        focus = st.session_state["mt_focus_toggle"]
+        if not focus:
+            _quicknav()
+            _global_search()
+            st.markdown("---")
+            _sidebar_stats(load_cfg())
+            _sidebar_minimap(load_cfg())
+            _last_job_ui()  # feature 39 — replay the last job
+        _inspector()
         st.markdown("---")
-        _sidebar_stats(load_cfg())
-        _last_job_ui()  # feature 39 — replay the last job
-        st.markdown("---")
-        choice = st.radio("Go to", list(PAGES.keys()), key="nav")
+        choice = _nav_ui()
 
     # breadcrumb history — feature 4
     if not history or history[-1] != choice:

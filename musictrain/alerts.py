@@ -11,8 +11,7 @@ import smtplib
 import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from . import console
 from .config import Config
@@ -92,6 +91,21 @@ def _discord(webhook: str, text: str) -> bool:
         return False
 
 
+def _telegram(bot_token: str, chat_id: str, text: str) -> bool:
+    """Send a message via the Telegram Bot API (zero deps)."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = json.dumps({"chat_id": chat_id, "text": text}).encode()
+    req = urllib.request.Request(
+        url, data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return 200 <= resp.status < 300
+    except Exception as exc:  # noqa: BLE001
+        console.warn(f"Telegram alert failed: {exc}")
+        return False
+
+
 def _email(host: str, port: int, user: str, password: str, to: str, subject: str, body: str) -> bool:
     try:
         msg = EmailMessage()
@@ -116,6 +130,8 @@ def alert(
     min_ok_pct: float = 0.5,
     slack_webhook: str = "",
     discord_webhook: str = "",
+    telegram_token: str = "",
+    telegram_chat: str = "",
     smtp_host: str = "",
     smtp_port: int = 587,
     smtp_user: str = "",
@@ -147,6 +163,9 @@ def alert(
     if discord_webhook:
         fired = _discord(discord_webhook, text) or fired
         result["channels"].append("discord")
+    if telegram_token and telegram_chat:
+        fired = _telegram(telegram_token, telegram_chat, text) or fired
+        result["channels"].append("telegram")
     if smtp_host and smtp_user and smtp_to:
         fired = (
             _email(smtp_host, smtp_port, smtp_user, smtp_password, smtp_to,

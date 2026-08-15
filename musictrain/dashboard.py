@@ -2641,6 +2641,12 @@ def _nav_ui() -> str:
 
 
 def main() -> None:
+    # Optional sign-in gate (#17) — no-op unless MUSICTRAIN_PASSWORD/USERS/OAUTH set.
+    from .auth import streamlit_gate
+
+    if not streamlit_gate():
+        st.stop()
+
     st.markdown(_theme_css(), unsafe_allow_html=True)
     _command_palette()
 

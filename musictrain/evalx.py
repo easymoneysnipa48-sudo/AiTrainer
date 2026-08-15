@@ -62,7 +62,6 @@ def listening_ab(a_wins: int, b_wins: int, ties: int = 0) -> dict:
     win_rate = a_wins / n
     # exact two-sided binomial p-value
     p = 0.0
-    import statistics
     for k in range(0, n + 1):
         pk = math.comb(n, k) * (0.5 ** n)
         if abs(k - n / 2) >= abs(a_wins - n / 2):

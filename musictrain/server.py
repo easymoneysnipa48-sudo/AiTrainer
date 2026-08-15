@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import threading
 import uuid
-from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from . import console
@@ -90,18 +89,37 @@ class JobQueue:
 QUEUE = JobQueue()
 
 
+def _importable(module: str) -> bool:
+    try:
+        __import__(module)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # App factory (#41)
 # --------------------------------------------------------------------------- #
-def create_app(cfg: Config):
+def create_app(cfg: Config, require_token: Optional[str] = None):
     try:
-        from fastapi import FastAPI, HTTPException, Query
+        from fastapi import FastAPI, HTTPException, Request
+        from fastapi.responses import FileResponse, StreamingResponse
         from pydantic import BaseModel
     except ImportError:
         console.error("fastapi is not installed — run `uv pip install fastapi uvicorn` and retry.")
         raise
 
     app = FastAPI(title="musictrain API", version="1.0")
+
+    # -- optional bearer-token auth (#17) -------------------------------- #
+    if require_token:
+        @app.middleware("http")
+        async def _auth(request: Request, call_next):
+            auth = request.headers.get("Authorization", "")
+            if auth != f"Bearer {require_token}":
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=401, content={"detail": "invalid token"})
+            return await call_next(request)
 
     class EvalRequest(BaseModel):
         section: Optional[str] = None
@@ -115,6 +133,46 @@ def create_app(cfg: Config):
     @app.get("/health")
     def health():
         return {"status": "ok", "root": str(cfg.project_root)}
+
+    @app.get("/health/live")
+    def health_live():
+        return {"status": "alive", "jobs": len(QUEUE._jobs)}
+
+    @app.get("/ready")
+    def ready():
+        """Readiness: check the project layout + optional heavy deps are usable."""
+        checks = {
+            "project_root": (cfg.project_root / "metadata").exists(),
+            "torch": _importable("torch"),
+            "streamlit": _importable("streamlit"),
+        }
+        ready = checks["project_root"]
+        status = "ready" if ready else "not_ready"
+        return {"status": status, "checks": checks}
+
+    @app.post("/generate/stream")
+    def generate_stream(req: GenerateRequest):
+        """Chunked audio generation — yields the prompt as it is processed."""
+        from .inference import generate
+
+        def gen():
+            yield b"{\"event\": \"start\"}\n"
+            try:
+                out = generate(cfg, req.prompt, seed=req.seed)
+                yield b"{\"event\": \"done\", \"path\": %b}\n" % str(out).encode()
+            except Exception as exc:  # noqa: BLE001
+                yield b"{\"event\": \"error\", \"message\": %b}\n" % str(exc).encode()
+
+        return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.get("/audio/{filename}")
+    def audio(filename: str):
+        """Serve a generated audio file (chunked by FileResponse with range support)."""
+        base = cfg.project_root / "outputs"
+        path = (base / filename).resolve()
+        if not path.is_file() or base.resolve() not in path.parents:
+            raise HTTPException(status_code=404, detail="audio not found")
+        return FileResponse(path, media_type="audio/wav")
 
     @app.get("/inventory")
     def inventory():
@@ -175,13 +233,13 @@ def create_app(cfg: Config):
     return app
 
 
-def serve(cfg: Config, port: int = 8000) -> int:
+def serve(cfg: Config, port: int = 8000, token: str = "") -> int:
     try:
         import uvicorn
     except ImportError:
         console.error("uvicorn is not installed — run `uv pip install uvicorn` and retry.")
         return 1
-    app = create_app(cfg)
+    app = create_app(cfg, require_token=token or None)
     console.info(f"Serving musictrain API at http://localhost:{port}")
     uvicorn.run(app, host="127.0.0.1", port=port)
     return 0

@@ -988,7 +988,7 @@ def cmd_serve(args) -> int:
     from .server import serve
 
     cfg = _build_config(args)
-    return serve(cfg, port=args.port)
+    return serve(cfg, port=args.port, token=getattr(args, "token", ""))
 
 
 def cmd_register(args) -> int:
@@ -1110,12 +1110,25 @@ def cmd_alert(args) -> int:
         min_ok_pct=args.min_ok,
         slack_webhook=args.slack_webhook or "",
         discord_webhook=args.discord_webhook or "",
+        telegram_token=args.telegram_token or "",
+        telegram_chat=args.telegram_chat or "",
         smtp_host=args.smtp_host or "",
         smtp_user=args.smtp_user or "",
         smtp_password=args.smtp_password or "",
         smtp_to=args.smtp_to or "",
     )
     return 0
+
+
+def cmd_backup(args) -> int:
+    from .backup import run
+
+    cfg = _build_config(args)
+    result = run(
+        cfg, args.task, label=args.label or "", archive=args.archive or "",
+        force=args.force, include_mlflow=not args.no_mlflow,
+    )
+    return 1 if result.get("error") else 0
 
 
 def cmd_cost(args) -> int:
@@ -1790,6 +1803,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("serve", help="Launch the FastAPI REST backend (#41/#42)")
     add_common(sp)
     sp.add_argument("--port", type=int, default=8000)
+    sp.add_argument("--token", default="", help="Optional bearer token to protect the API")
     sp.set_defaults(func=cmd_serve)
 
     # register (MLflow registry)
@@ -1862,11 +1876,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-ok", type=float, default=0.5)
     sp.add_argument("--slack-webhook", default="")
     sp.add_argument("--discord-webhook", default="")
+    sp.add_argument("--telegram-token", default="")
+    sp.add_argument("--telegram-chat", default="")
     sp.add_argument("--smtp-host", default="")
     sp.add_argument("--smtp-user", default="")
     sp.add_argument("--smtp-password", default="")
     sp.add_argument("--smtp-to", default="")
     sp.set_defaults(func=cmd_alert)
+
+    # backup/restore (gap #16)
+    sp = sub.add_parser("backup", help="Snapshot/restore MLflow + metadata state (#16)")
+    add_common(sp)
+    sp.add_argument("--task", required=True, choices=["snapshot", "restore", "list"])
+    sp.add_argument("--label", default="", help="Backup label (snapshot)")
+    sp.add_argument("--archive", default="", help="Archive path (restore)")
+    sp.add_argument("--force", action="store_true", help="Overwrite existing files (restore)")
+    sp.add_argument("--no-mlflow", action="store_true", help="Exclude local MLflow state (snapshot)")
+    sp.set_defaults(func=cmd_backup)
 
     # cost
     sp = sub.add_parser("cost", help="Estimate + log run cost (#48)")

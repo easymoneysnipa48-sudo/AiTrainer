@@ -212,6 +212,38 @@ def test_aggregate_deviation_above_threshold_rejects(tmp_path):
     assert "|dev|" in agg["notes"]
 
 
+def test_check_folded_octave_reports_folded_deviation(tmp_path, monkeypatch):
+    """Regression: octave-folded clips must report the folded (small) deviation
+    so downstream auto-reject treats them as on-target, not raw double-time."""
+    from musictrain import evaluate as ev
+
+    cfg = _cfg(tmp_path)
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"x")
+
+    monkeypatch.setattr(ev, "load_audio", lambda path, sr: (np.zeros(16000, dtype=np.float32), 32000))
+    monkeypatch.setattr(ev, "estimate_bpm", lambda y, sr: 156.0)  # double-time of 78
+
+    report = ev.check(cfg, wav, target_bpm=78.0)
+    assert report["status"] == "ok"
+    assert report["raw_deviation"] == pytest.approx(1.0, abs=1e-4)
+    assert report["deviation"] == pytest.approx(0.0, abs=1e-2)  # folded 156*0.5 = 78
+    assert report["folded_bpm"] == 78.0
+    assert "double-time" in report["note"]
+
+
+def test_aggregate_accepts_folded_deviation(tmp_path):
+    """A seed whose check folded (status ok, small deviation) must not be
+    auto-rejected on the raw double-time deviation."""
+    cfg = _cfg(tmp_path)
+    cfg.eval.max_abs_deviation = 0.20
+    seed = _seed(clap=0.6, status="ok", dev=0.001)
+    seed["detected_bpm"] = 156.0
+    agg = _aggregate({"bpm": 78, "description": "x"}, [seed], cfg)
+    assert agg["status"] == "ok"
+    assert agg["notes"] == ""
+
+
 def test_aggregate_passes_with_thresholds(tmp_path):
     cfg = _cfg(tmp_path)
     cfg.eval.min_clap_score = 0.5

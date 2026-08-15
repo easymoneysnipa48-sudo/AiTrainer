@@ -217,15 +217,17 @@ def _aggregate(prompt: dict, seed_records: List[dict], cfg: Config) -> dict:
     import statistics
 
     detected = [r["detected_bpm"] for r in seed_records if r.get("detected_bpm") is not None]
+    devs = [r["deviation"] for r in seed_records if r.get("deviation") is not None]
     claps = [r["clap_score"] for r in seed_records if r.get("clap_score") is not None]
     oks = sum(1 for r in seed_records if r.get("status") == "ok")
     n = len(seed_records)
 
     med_det = statistics.median(detected) if detected else None
     target = prompt.get("bpm")
-    deviation = None
-    if med_det is not None and target:
-        deviation = round((med_det - float(target)) / float(target), 4)
+    # deviation comes from the per-seed check reports — these already reflect
+    # octave folding (folded clips report a small deviation), so the aggregate
+    # must not re-derive a raw double/half-time deviation from detected_bpm.
+    deviation = round(statistics.median(devs), 4) if devs else None
 
     mean_clap = round(sum(claps) / len(claps), 4) if claps else None
 

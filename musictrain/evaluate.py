@@ -49,14 +49,14 @@ def check(
         console.info(f"{audio_path.name}: BPM = {detected}")
         return report
 
-    deviation = (detected - target_bpm) / target_bpm
-    report["deviation"] = round(deviation, 4)
+    raw_deviation = (detected - target_bpm) / target_bpm
 
     # Octave ambiguity: sparse or percussive content is frequently detected at
     # double/half/quadruple/quarter time. Fold by those ratios and see if any
     # matches the target (closest folds first).
     octave_note = None
-    if abs(deviation) > ccfg.bpm_tolerance:
+    folded_bpm = None
+    if abs(raw_deviation) > ccfg.bpm_tolerance:
         folds = (
             (0.5, "double-time (0.5x octave)"),
             (2.0, "half-time (2x octave)"),
@@ -67,17 +67,28 @@ def check(
             folded = detected * factor
             if abs((folded - target_bpm) / target_bpm) <= ccfg.bpm_tolerance:
                 octave_note = label
-                report["folded_bpm"] = round(folded, 2)
+                folded_bpm = round(folded, 2)
                 break
 
-    if abs(deviation) <= ccfg.bpm_tolerance:
+    # The reported deviation is the adherence-correct one: folded clips that
+    # are within tolerance report the (small) folded deviation, so downstream
+    # auto-reject / leaderboard / significance treat them as on-target.
+    deviation = raw_deviation
+    if octave_note and folded_bpm is not None:
+        deviation = (folded_bpm - target_bpm) / target_bpm
+    report["deviation"] = round(deviation, 4)
+    report["raw_deviation"] = round(raw_deviation, 4)
+
+    if abs(raw_deviation) <= ccfg.bpm_tolerance:
         report["status"] = "ok"
         console.ok(f"{audio_path.name}: {detected} BPM vs {target_bpm} (dev {deviation:+.2%})")
     elif octave_note:
         report["status"] = "ok"
         report["note"] = f"detected tempo is {octave_note} of target"
+        report["folded_bpm"] = folded_bpm
         console.ok(
-            f"{audio_path.name}: {detected} BPM ≈ {octave_note} of target {target_bpm}"
+            f"{audio_path.name}: {detected} BPM ≈ {octave_note} of target {target_bpm} "
+            f"(folded dev {deviation:+.2%})"
         )
     elif fix and abs(deviation) <= ccfg.max_time_stretch:
         rate = float(target_bpm) / detected

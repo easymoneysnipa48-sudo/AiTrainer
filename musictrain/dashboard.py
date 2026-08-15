@@ -157,15 +157,27 @@ _LIGHT_CSS = """
 def _theme_css() -> str:
     light = st.session_state.get("mt_theme") == "light"
     base = _LIGHT_CSS if light else _DARK_CSS
-    return base + """
+    accent = st.session_state.get("mt_accent", "#5b8cff")
+    return base + f"""
 <style>
+  :root, .stApp {{ --mt-accent: {accent}; --mt-accent-2: #7c5cff; }}
   .stApp, [data-testid="stSidebar"], [data-testid="stMetric"], .stButton > button,
   [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
-  [data-testid="stMarkdownContainer"] { transition: background-color .3s ease, color .3s ease, border-color .3s ease; }
-  @media (max-width: 768px) {
-    .mt-header { flex-direction: column; align-items: flex-start; gap: 4px; }
-    [data-testid="stMetric"] { padding: 10px 12px; }
-  }
+  [data-testid="stMarkdownContainer"] {{ transition: background-color .3s ease, color .3s ease, border-color .3s ease; }}
+  .stButton > button[kind="primary"] {{ background: linear-gradient(135deg, var(--mt-accent) 0%, var(--mt-accent-2) 100%); }}
+  /* uikit components */
+  .mt-chip {{ display:inline-block; font-size:.72rem; color:#9aa3c0;
+    border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:2px 9px; margin:2px 4px 2px 0; }}
+  .mt-chip b {{ color:#eef1fb; }}
+  .mt-tile {{ background: rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.08);
+    border-radius:12px; padding:12px 14px; margin:4px 0; }}
+  .mt-tile-l {{ font-size:.74rem; color:#9aa3c0; }}
+  .mt-tile-v {{ font-size:1.35rem; font-weight:700; color:#eef1fb; }}
+  .mt-tile-d {{ font-size:.72rem; color:#7ee2a8; }}
+  @media (max-width: 768px) {{
+    .mt-header {{ flex-direction: column; align-items: flex-start; gap: 4px; }}
+    [data-testid="stMetric"] {{ padding: 10px 12px; }}
+  }}
 </style>
 """
 
@@ -209,6 +221,16 @@ def _toggle_theme() -> None:
         st.session_state["mt_theme"] = _os_theme()
     elif mode in ("dark", "light"):
         st.session_state["mt_theme"] = mode
+
+    # accent-color token picker (theme tokens)
+    accents = {
+        "💙 Blue": "#5b8cff", "💜 Violet": "#7c5cff", "🩵 Cyan": "#22c1dc",
+        "💚 Green": "#2fbf71", "🩷 Pink": "#ff5c8a", "🧡 Amber": "#ffa53c",
+    }
+    cur = st.session_state.get("mt_accent", "#5b8cff")
+    label = next((k for k, v in accents.items() if v == cur), "💙 Blue")
+    pick = st.selectbox("🖌️ Accent", list(accents.keys()), index=list(accents.keys()).index(label), key="mt_accent_pick")
+    st.session_state["mt_accent"] = accents[pick]
 
 
 # --------------------------------------------------------------------------- #
@@ -2462,6 +2484,143 @@ def page_training() -> None:
     trainviz.lr_schedule()
 
 
+def page_metricslab() -> None:
+    """Metrics Lab: every headline metric as animated gauges/sparklines/tiles."""
+    from musictrain import uikit
+    from musictrain.report import load_results
+
+    _page_header("🧮", "Metrics Lab",
+                 "All headline metrics in one live view — gauges, sparklines and tiles.")
+    cfg = load_cfg()
+    rows = load_results(cfg.project_root)
+    if not rows:
+        st.info("No eval results yet — run `musictrain eval` to populate.")
+        return
+
+    claps = [r["clap_score"] for r in rows if r.get("clap_score") is not None]
+    devs = [abs(r["deviation"]) for r in rows if r.get("deviation") is not None]
+    ok = sum(1 for r in rows if r.get("status") == "ok")
+    mean_clap = sum(claps) / len(claps) if claps else 0.0
+    mean_dev = sum(devs) / len(devs) if devs else 0.0
+    ok_rate = ok / len(rows) if rows else 0.0
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        uikit.gauge(mean_clap, "mean CLAP", 1.0, key="g_clap")
+    with c2:
+        uikit.gauge(1.0 - min(1.0, mean_dev * 5), "BPM adherence", 1.0, key="g_dev")
+    with c3:
+        uikit.gauge(ok_rate, "ok-rate", 1.0, key="g_ok")
+    with c4:
+        uikit.metric_tile("Prompts", f"{len(rows)}", f"{ok} ok")
+
+    st.markdown("#### CLAP distribution")
+    uikit.sparkline(sorted(claps), label="CLAP (sorted)")
+    uikit.sparkline(sorted(devs), label="|BPM deviation| (sorted)")
+
+    st.markdown("#### Per-genre tiles")
+    by_g = {}
+    for r in rows:
+        g = (r.get("genre") or "default").strip() or "default"
+        by_g.setdefault(g, []).append(r.get("clap_score"))
+    cols = st.columns(min(4, max(1, len(by_g))))
+    for i, (g, vals) in enumerate(by_g.items()):
+        vals = [v for v in vals if v is not None]
+        with cols[i % len(cols)]:
+            uikit.metric_tile(g, f"{sum(vals) / len(vals):.3f}" if vals else "—", f"{len(vals)} clip(s)")
+
+
+def page_modelops() -> None:
+    """Model Ops: registry, backup, lineage, checksums and rollback."""
+    _page_header("📦", "Model Ops",
+                 "Registry, backups, lineage and artifact integrity.")
+    cfg = load_cfg()
+    t_reg, t_backup, t_lineage = st.tabs(["📚 Registry", "🗄️ Backups", "🧬 Lineage"])
+
+    with t_reg:
+        try:
+            from musictrain.registry_ml import list_models
+
+            models = list_models(cfg)
+            if not models:
+                st.info("No registered models — run `musictrain register <checkpoint>`.")
+            else:
+                st.dataframe(pd.DataFrame(models), width="stretch")
+        except Exception as exc:  # noqa: BLE001 - registry is best-effort
+            st.info(f"Registry unavailable: {exc}")
+
+    with t_backup:
+        from musictrain.backup import list_backups
+
+        bks = list_backups(cfg)
+        if not bks:
+            st.info("No backups yet — run `musictrain backup --task snapshot`.")
+        else:
+            st.dataframe(pd.DataFrame(bks), width="stretch")
+        if st.button("🔄 Snapshot now", key="bk_snap"):
+            from musictrain.backup import snapshot
+
+            snapshot(cfg)
+            st.toast("Backup created.")
+
+    with t_lineage:
+        from musictrain.modelops import lineage_graph
+
+        lg = lineage_graph(cfg)
+        edges = lg.get("edges", [])
+        if not edges:
+            st.info("No lineage recorded — run `musictrain modelops --task lineage`.")
+        else:
+            for e in edges:
+                st.markdown(f"- `{e.get('parent', '?')}` → `{e.get('child', '?')}`")
+
+
+def page_ops() -> None:
+    """Ops & Alerts: cost, runlog, alerts and config lint."""
+    _page_header("📡", "Ops & Alerts",
+                 "Cost attribution, runlog, alert thresholds and config health.")
+    cfg = load_cfg()
+    t_cost, t_log, t_alert, t_lint = st.tabs(["⚡ Cost", "🪵 Runlog", "🚨 Alerts", "🧾 Config lint"])
+
+    with t_cost:
+        from musictrain.cost import cost_summary
+
+        s = cost_summary(cfg)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("Total energy", f"{s.get('total_kwh', 0):.3f} kWh")
+        with c2:
+            st.metric("Runs", s.get("runs", 0))
+
+    with t_log:
+        from musictrain.telemetry import read_runlog
+
+        logs = read_runlog(cfg.project_root, limit=50)
+        if not logs:
+            st.info("No runlog entries.")
+        else:
+            st.dataframe(pd.DataFrame(logs), width="stretch")
+
+    with t_alert:
+        from musictrain.alerts import check_alerts
+
+        violations = check_alerts(cfg)
+        if not violations:
+            st.success("No threshold violations — all clear.")
+        else:
+            st.warning(f"{len(violations)} violation(s)")
+            st.dataframe(pd.DataFrame(violations), width="stretch")
+
+    with t_lint:
+        from musictrain.modelops import lint
+
+        res = lint(cfg)
+        issues = res.get("issues", [])
+        if not issues:
+            st.success("Config lint passed.")
+        else:
+            st.dataframe(pd.DataFrame(issues), width="stretch")
+
 
 def page_analytics() -> None:
     """Batch 5 - analytics: embeddings, active learning, curation, leaderboard, checkpoints."""
@@ -2510,8 +2669,11 @@ PAGES = {
     "🏆 Leaderboard": page_leaderboard,
     "📈 Training": page_training,
     "🔬 Analytics": page_analytics,
+    "🧮 Metrics Lab": page_metricslab,
     "🎯 Eval": page_eval,
     "🎧 Listening": page_listening,
+    "📦 Model Ops": page_modelops,
+    "📡 Ops & Alerts": page_ops,
     "🪵 Logs": page_logs,
 }
 
@@ -2521,9 +2683,9 @@ _NAV_GROUPS = [
     ("📁 Data", ["📋 Inventory", "🔧 Normalize", "🏷️ Metadata", "✂️ Segment & Split"]),
     ("🎛️ Generate", ["🎛️ Generate", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize"]),
     ("🏷️ Curate", ["🏷️ Labels", "🧹 Hygiene", "🎧 Listening"]),
-    ("📊 Evaluate", ["📊 Compare", "🏆 Leaderboard", "🎯 Eval"]),
-    ("🔬 Model", ["📈 Training", "🔬 Analytics"]),
-    ("🪵 System", ["🪵 Logs"]),
+    ("📊 Evaluate", ["📊 Compare", "🏆 Leaderboard", "🧮 Metrics Lab", "🎯 Eval"]),
+    ("🔬 Model", ["📈 Training", "🔬 Analytics", "📦 Model Ops"]),
+    ("🪵 System", ["📡 Ops & Alerts", "🪵 Logs"]),
 ]
 
 
@@ -2642,7 +2804,7 @@ def _nav_ui() -> str:
 
 def main() -> None:
     # Optional sign-in gate (#17) — no-op unless MUSICTRAIN_PASSWORD/USERS/OAUTH set.
-    from .auth import streamlit_gate
+    from musictrain.auth import streamlit_gate
 
     if not streamlit_gate():
         st.stop()

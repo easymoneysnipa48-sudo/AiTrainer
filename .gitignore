@@ -71,6 +71,8 @@ metadata/promotion_*.md
 metadata/runlog.jsonl
 metadata/alerts.jsonl
 metadata/cost_log.jsonl
+metadata/config_lint.json
+metadata/*.bak
 metadata/export/
 data/augmented/
 data/resynth/

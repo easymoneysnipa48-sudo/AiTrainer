@@ -558,6 +558,11 @@ def run(root: Path, cfg: Config, limit: int = 0) -> dict:
         )
     extras["genre_gates"] = genre_gates
 
+    # paraphrase robustness (advanced eval #12) when paraphrase prompts exist
+    from .evalset import paraphrase_robustness
+
+    extras["paraphrase_robustness"] = paraphrase_robustness(rows)
+
     out = {"n_clips": len(scored), "clips": scored, **extras}
     path = root / "metadata" / "adherence.json"
     path.parent.mkdir(parents=True, exist_ok=True)

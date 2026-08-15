@@ -399,7 +399,13 @@ def cmd_evalset(args) -> int:
     from .evalset import build
 
     cfg = _build_config(args)
-    prompts = build(cfg.project_root, force=args.force, adversarial=getattr(args, "adversarial", 0))
+    prompts = build(
+        cfg.project_root,
+        force=args.force,
+        adversarial=getattr(args, "adversarial", 0),
+        negatives=getattr(args, "negatives", 0),
+        paraphrases=getattr(args, "paraphrases", 0),
+    )
     console.ok(f"Prompt set: {len(prompts)} prompts ready")
     return 0
 
@@ -618,6 +624,15 @@ def cmd_analyze(args) -> int:
         cfg.project_root, cfg, which=args.dir, limit=args.limit, path=path
     )
     return 0
+
+
+def cmd_deep(args) -> int:
+    from .audio.deep import deep
+
+    cfg = _build_config(args)
+    path = Path(args.path).resolve() if args.path else None
+    records = deep(cfg.project_root, cfg, which=args.dir, limit=args.limit, path=path)
+    return 0 if records else 1
 
 
 def cmd_resynth(args) -> int:
@@ -1117,6 +1132,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", help="Overwrite existing set")
     sp.add_argument("--adversarial", type=int, default=0,
                     help="Append N adversarial (tricky) prompts (advanced #10)")
+    sp.add_argument("--negatives", type=int, default=0,
+                    help="Append N negative-control (nonsense) prompts (advanced #11)")
+    sp.add_argument("--paraphrases", type=int, default=0,
+                    help="Append N paraphrase groups for robustness eval (advanced #12)")
     sp.set_defaults(func=cmd_evalset)
 
     # eval
@@ -1298,6 +1317,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--path", default=None, help="Analyze a single audio file")
     sp.add_argument("--limit", type=int, default=0)
     sp.set_defaults(func=cmd_analyze)
+
+    # deep
+    sp = sub.add_parser(
+        "deep",
+        help="Deep signal analysis: tempo drift, groove, loudness, stereo, "
+             "artifacts, spectral profile, onset density, frequency masking (advanced #13-#20)",
+    )
+    add_common(sp)
+    sp.add_argument("--dir", default="clean", help="data/<dir> to scan (ignored with --path)")
+    sp.add_argument("--path", default=None, help="Analyze a single audio file")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.set_defaults(func=cmd_deep)
 
     # score
     sp = sub.add_parser("score", help="Score audio-text similarity with CLAP")

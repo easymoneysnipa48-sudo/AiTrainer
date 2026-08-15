@@ -138,7 +138,130 @@ def adversarial_prompts(root: Path, n: int = 10, start_seed: int = 1000) -> List
     return out
 
 
-def build(root: Path, force: bool = False, adversarial: int = 0) -> List[dict]:
+def negative_controls(n: int = 5, start_seed: int = 2000) -> List[dict]:
+    """Advanced eval #11 — nonsense prompts that a well-behaved checkpoint
+    should NOT score high on (catch overfit/cheating).
+
+    Gibberish, contradictory, and near-empty conditioning carry
+    ``negative_control: true`` so eval/report code can isolate them.
+    """
+    traps = [
+        ("verse", 90, "melodic trap", "A minor", "zlorg blorp flibber splat, 90 BPM, A minor"),
+        ("chorus", 120, "melodic trap", "C minor", "chorus with no instruments, no melody, no rhythm, nothing at all, 120 BPM"),
+        ("intro", 100, "ambient", "E minor", "silence, 100 BPM, E minor, completely empty"),
+        ("bridge", 80, "melodic trap", "F minor", "bridge, 80 BPM, F minor, loud 808 and also totally silent"),
+        ("outro", 70, "orchestral", "D minor", "outro, 70 BPM, D minor, reverse choir playing backwards drums upside down"),
+    ]
+    out: List[dict] = []
+    for i, (section, bpm, genre, key, desc) in enumerate(traps[:n]):
+        out.append(
+            {
+                "id": f"neg_{i:02d}",
+                "section": section,
+                "genre": genre,
+                "bpm": bpm,
+                "key": key,
+                "mood": "",
+                "instruments": "",
+                "energy": 0.5,
+                "seed": start_seed + i,
+                "negative_control": True,
+                "description": desc,
+            }
+        )
+    return out
+
+
+def paraphrase_prompts(n_groups: int = 4, start_seed: int = 3000) -> List[dict]:
+    """Advanced eval #12 — the same intent reworded several ways.
+
+    Each paraphrase group shares an ``intent`` id; a robust checkpoint should
+    produce similar adherence (CLAP) across all wordings of the same intent.
+    """
+    groups = [
+        ("chorus", 96, "C minor", [
+            "chorus, 96 BPM, C minor, heavy 808 bass, autotune vocals, trap hi-hats, high energy",
+            "high-energy chorus at 96 BPM in C minor with a heavy 808, autotuned vocal and trap hats",
+            "chorus in C minor, 96 beats per minute, big 808, tuned vocals, rapid hi-hats",
+        ]),
+        ("verse", 78, "A minor", [
+            "verse, 78 BPM, A minor, restrained snare, deep 808 bass, narrative mood, medium energy",
+            "a restrained 78 BPM verse in A minor with a deep 808 and soft snare",
+            "verse, A minor, 78 BPM, deep 808, light snare, storytelling feel",
+        ]),
+        ("intro", 72, "E minor", [
+            "intro, 72 BPM, E minor, dark piano loop, atmospheric pads, low energy",
+            "low-energy intro in E minor at 72 BPM with a dark piano loop and airy pads",
+            "intro, E minor, 72 BPM, moody piano, atmospheric pads",
+        ]),
+        ("bridge", 84, "F minor", [
+            "bridge, 84 BPM, F minor, stripped-back piano, soft strings, reflective mood",
+            "reflective bridge at 84 BPM in F minor, bare piano and soft strings",
+            "bridge, F minor, 84 BPM, minimal piano, gentle strings",
+        ]),
+    ]
+    out: List[dict] = []
+    for g, (section, bpm, key, phrasings) in enumerate(groups[:n_groups]):
+        for p, desc in enumerate(phrasings):
+            out.append(
+                {
+                    "id": f"para_{g:02d}_{p}",
+                    "section": section,
+                    "genre": "melodic trap",
+                    "bpm": bpm,
+                    "key": key,
+                    "mood": "",
+                    "instruments": "",
+                    "energy": 0.5,
+                    "seed": start_seed + g * 10 + p,
+                    "paraphrase": True,
+                    "intent": f"para_{g:02d}",
+                    "description": desc,
+                }
+            )
+    return out
+
+
+def paraphrase_robustness(rows: List[dict]) -> dict:
+    """Advanced eval #12 — consistency of CLAP across paraphrase groups.
+
+    Low within-group CLAP spread = the checkpoint is robust to rephrasing
+    (the intent, not the wording, drives the result). High spread = the model
+    is over-anchored to specific words.
+    """
+    import statistics
+
+    groups: dict = {}
+    for r in rows:
+        intent = r.get("intent")
+        if not intent or not r.get("paraphrase"):
+            continue
+        if r.get("clap_score") is not None:
+            groups.setdefault(intent, []).append(r["clap_score"])
+
+    per_group = []
+    for intent, claps in sorted(groups.items()):
+        if len(claps) < 2:
+            continue
+        per_group.append({
+            "intent": intent,
+            "n": len(claps),
+            "mean_clap": round(statistics.mean(claps), 4),
+            "std_clap": round(statistics.stdev(claps), 4),
+            "spread": round(max(claps) - min(claps), 4),
+        })
+
+    spreads = [g["spread"] for g in per_group]
+    return {
+        "n_groups": len(per_group),
+        "groups": per_group,
+        "mean_spread": round(statistics.mean(spreads), 4) if spreads else None,
+        "robust": bool(spreads and statistics.mean(spreads) < 0.10),
+    }
+
+
+def build(root: Path, force: bool = False, adversarial: int = 0,
+          negatives: int = 0, paraphrases: int = 0) -> List[dict]:
     prompts: List[dict] = []
     i = 0
     for section, tmpl in SECTIONS.items():
@@ -178,6 +301,16 @@ def build(root: Path, force: bool = False, adversarial: int = 0) -> List[dict]:
         adv = adversarial_prompts(root, n=adversarial, start_seed=1000)
         prompts.extend(adv)
         console.step(f"Appending {len(adv)} adversarial prompt(s)")
+
+    if negatives:
+        neg = negative_controls(n=negatives, start_seed=2000)
+        prompts.extend(neg)
+        console.step(f"Appending {len(neg)} negative-control prompt(s)")
+
+    if paraphrases:
+        par = paraphrase_prompts(n_groups=paraphrases, start_seed=3000)
+        prompts.extend(par)
+        console.step(f"Appending {len(par)} paraphrase prompt(s)")
 
     with jsonlines.open(out, mode="w") as w:
         for p in prompts:

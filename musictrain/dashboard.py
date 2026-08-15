@@ -2253,12 +2253,29 @@ def _analyze_clip(path: str, cfg: Config) -> dict:
     return rec
 
 
+def _eval_rows() -> list:
+    """Read eval_results.jsonl into a list of dicts ([] if missing)."""
+    p = ROOT / "metadata" / "eval_results.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def page_visualize() -> None:
-    """Batch 1 - previews & audio: waveforms, spectrograms, chords, structure, stems."""
+    """Batch 1+2 - previews & audio: waveforms, spectrograms, chords, structure, stems, CLAP."""
     from musictrain import viz
 
     _page_header("🎬", "Visualize",
-                 "Waveforms, spectrograms, chords, beat grids, structure and stem mixing.")
+                 "Waveforms, spectrograms, chords, beat grids, structure, stems and prompt adherence.")
     cfg = load_cfg()
     files = viz.scan_audio(ROOT, ["data/clean", "data/raw", "data/segments", "outputs"])
     if not files:
@@ -2268,8 +2285,20 @@ def page_visualize() -> None:
     names = {str(p): f"{p.relative_to(ROOT)}" for p in files}
     sel = st.selectbox("Clip", list(names), format_func=lambda k: names[k], key="viz_clip")
 
-    t_wave, t_spect, t_music, t_struct, t_stems = st.tabs(
-        ["🌊 Waveform", "🔬 Spectrogram", "🎼 Beat & chords", "🧩 Structure", "🎚️ Stems"])
+    ev = _eval_rows()
+    mean_clap = sum(r.get("clap_score") or 0.0 for r in ev) / len(ev) if ev else 0.0
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        viz.countup_metric("clips", len(files), "viz_clips")
+    with m2:
+        viz.countup_metric("stems", len(viz.scan_audio(ROOT, ["data/stems"])), "viz_stems")
+    with m3:
+        viz.countup_metric("eval rows", len(ev), "viz_eval")
+    with m4:
+        viz.countup_metric("mean CLAP", mean_clap, "viz_clap", decimals=2)
+
+    t_wave, t_spect, t_music, t_struct, t_stems, t_clap = st.tabs(
+        ["🌊 Waveform", "🔬 Spectrogram", "🎼 Beat & chords", "🧩 Structure", "🎚️ Stems", "🔖 CLAP"])
 
     with t_wave:
         viz.waveform(sel, "page")
@@ -2284,10 +2313,19 @@ def page_visualize() -> None:
         viz.chromagram(sel, "page")
     with t_struct:
         rec = _analyze_clip(sel, cfg)
-        viz.structure_timeline(sel, rec.get("structure", {}).get("segments", []), "page")
+        segs = rec.get("structure", {}).get("segments", [])
+        viz.segmented_waveform(sel, segs, "page")
+        viz.structure_timeline(sel, segs, "page")
     with t_stems:
         stem_files = viz.scan_audio(ROOT, ["data/stems"])
         viz.stem_mixer(stem_files, "page")
+    with t_clap:
+        if not ev:
+            st.caption("run an eval to populate per-tag CLAP scores")
+        else:
+            ckpt = st.selectbox("Checkpoint", sorted({r.get("checkpoint", "?") for r in ev}),
+                                key="viz_ckpt")
+            viz.clap_heat_strip([r for r in ev if r.get("checkpoint") == ckpt], "page")
 
     st.markdown("---")
     c1, c2 = st.columns(2)
@@ -2301,6 +2339,7 @@ def page_visualize() -> None:
             st.caption("run normalize to compare raw vs clean")
     with c2:
         st.subheader("Live generation")
+        viz.live_dot("watching outputs/")
         viz.live_generation_view(str(ROOT / "outputs"), "page")
 
 

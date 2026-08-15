@@ -338,3 +338,156 @@ def onset_overlay(path: str, beat_grid: dict, onsets: dict, key: str) -> None:
         st.pyplot(fig)
     except Exception as exc:  # noqa: BLE001
         st.caption(f"onset overlay unavailable: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# 11 — per-tag CLAP heat strip
+# --------------------------------------------------------------------------- #
+def clap_heat_strip(rows: list, key: str) -> None:
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    rows = [r for r in rows if r.get("clap_per_tag")]
+    if not rows:
+        st.caption("no per-tag CLAP data in the eval results")
+        return
+    tags = sorted({t for r in rows for t in r["clap_per_tag"]})
+    if not tags:
+        st.caption("empty clap_per_tag maps")
+        return
+    means = [float(np.mean([r["clap_per_tag"].get(t, 0.0) for r in rows])) for t in tags]
+    fig, ax = plt.subplots(figsize=(9, 1.6))
+    X = np.array(means).reshape(1, -1)
+    im = ax.imshow(X, cmap="RdYlGn", vmin=-0.1, vmax=0.6, aspect="auto")
+    for i, (t, m) in enumerate(zip(tags, means)):
+        ax.text(i, 0, f"{t}\n{m:.2f}", ha="center", va="center",
+                fontsize=8, color="#141414", weight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title("mean per-tag CLAP similarity (green = on-prompt)")
+    fig.colorbar(im, ax=ax, fraction=0.03)
+    st.pyplot(fig)
+
+
+# --------------------------------------------------------------------------- #
+# 12 — zoomable waveform with segment boundaries + role labels
+# --------------------------------------------------------------------------- #
+_SEG_COLORS = {
+    "intro": "#5b8cff", "verse": "#7c5cff", "chorus": "#ff5c8a",
+    "bridge": "#2ad4c4", "pre-chorus": "#ffb020", "outro": "#8a5cff",
+    "full-song": "#6f7f9f",
+}
+
+
+def segmented_waveform(path: str, segments: list, key: str) -> None:
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    try:
+        y, sr = _load_wave(path, sr=8000)
+        t = np.linspace(0, len(y) / sr, len(y))
+        fig, ax = plt.subplots(figsize=(9, 2.6))
+        ax.plot(t, y, color="#9aa3c0", lw=0.5, alpha=0.9)
+        for s in segments:
+            role = s.get("role", "?")
+            a, b = float(s["start"]), float(s["end"])
+            ax.axvspan(a, b, color=_SEG_COLORS.get(role, "#6f7f9f"), alpha=0.16)
+            ax.text((a + b) / 2, float(np.max(y)) * 0.92, role, ha="center",
+                    fontsize=8, color="#e6e9f2")
+        ax.set_title(f"{Path(path).name} — detected sections")
+        ax.set_xlabel("seconds")
+        st.pyplot(fig)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"segmented waveform unavailable: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# 13 — side-by-side augmented-variant previews
+# --------------------------------------------------------------------------- #
+def variant_grid(files: list, key: str, cols: int = 3) -> None:
+    if not files:
+        st.caption("no variant clips to preview")
+        return
+    for i in range(0, len(files), cols):
+        row = files[i:i + cols]
+        cs = st.columns(cols)
+        for j, (c, f) in enumerate(zip(cs, row)):
+            with c:
+                st.caption(Path(f).name[:30])
+                waveform(str(f), f"{key}_{i + j}", height=40)
+                st.audio(str(f))
+
+
+# --------------------------------------------------------------------------- #
+# 15 — waveform miniatures for the prompt gallery
+# --------------------------------------------------------------------------- #
+def gallery_miniatures(pairs: list, key: str, cols: int = 4) -> None:
+    """pairs: list of (title, audio_path). Renders card-like miniatures."""
+    for i in range(0, len(pairs), cols):
+        cs = st.columns(cols)
+        for j, (c, item) in enumerate(zip(cs, pairs[i:i + cols])):
+            title, path = item
+            with c:
+                st.markdown(f"**{title[:32]}**")
+                waveform(str(path), f"{key}_{i + j}", height=36)
+                st.audio(str(path))
+
+
+# --------------------------------------------------------------------------- #
+# 17 — skeleton placeholder block
+# --------------------------------------------------------------------------- #
+def skeleton(n: int = 3, height: int = 60) -> None:
+    for _ in range(n):
+        st.skeleton(height=height)
+
+
+# --------------------------------------------------------------------------- #
+# 18 — animated count-up metric
+# --------------------------------------------------------------------------- #
+def countup_metric(label: str, value: float, key: str,
+                   suffix: str = "", decimals: int | None = None) -> None:
+    import streamlit.components.v1 as components
+
+    if decimals is None:
+        decimals = 0 if float(value).is_integer() else 2
+    clean = str(key).replace("-", "_").replace(" ", "_")
+    js = f"""
+    <div style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);
+      border-radius:12px;padding:12px 16px;text-align:center">
+      <div style="font-size:.72rem;color:#9aa3c0;letter-spacing:.04em;text-transform:uppercase">{label}</div>
+      <div id="cu_{clean}" style="font-size:1.7rem;font-weight:700;color:#eef1fb">0</div>
+      <script>
+        (function(){{
+          var el=document.getElementById('cu_{clean}');
+          var target={value}; var t0=null;
+          function step(ts){{
+            if(!t0) t0=ts;
+            var p=Math.min(1,(ts-t0)/900);
+            var eased=1-Math.pow(1-p,3);
+            el.textContent=(target*eased).toFixed({decimals})+"{suffix}";
+            if(p<1) requestAnimationFrame(step);
+          }}
+          requestAnimationFrame(step);
+        }})();
+      </script>
+    </div>
+    """
+    components.html(js, height=78)
+
+
+# --------------------------------------------------------------------------- #
+# 20 — pulsing "live" dot
+# --------------------------------------------------------------------------- #
+def live_dot(text: str = "live") -> None:
+    st.markdown(
+        f"""
+        <style>
+        @keyframes mtpulse {{ 0% {{opacity:.25;transform:scale(.8)}}
+          50% {{opacity:1;transform:scale(1.25)}} 100% {{opacity:.25;transform:scale(.8)}} }}
+        .mt-live-dot {{ display:inline-block;width:9px;height:9px;border-radius:50%;
+          background:#7ee2a8;margin-right:6px;animation:mtpulse 1.6s ease-in-out infinite; }}
+        </style>
+        <div><span class="mt-live-dot"></span><span style="color:#7ee2a8">{text}</span></div>
+        """,
+        unsafe_allow_html=True,
+    )

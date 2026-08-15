@@ -498,6 +498,79 @@ musictrain eval --incremental --seeds 3
 #     (.github/workflows/eval-gate.yml, .github/scripts/run_gate.py)
 ```
 
+## Dashboard — 17 pages, 70 UI features
+
+Launch with `.venv/bin/streamlit run musictrain/dashboard.py`. The sidebar nav is
+grouped into collapsible sections; press **Ctrl/⌘+K** for the command palette
+(arrow keys + Enter to jump), or use the `g` / `l` / `c` / `t` / `a` / `v`
+keyboard shortcuts. Theme follows dark/light/system.
+
+### Pages (17)
+
+**📁 Data**
+- **📋 Inventory** — scan + quality-summarize the corpus
+- **🔧 Normalize** — loudness + format normalization into `data/clean`
+- **🏷️ Metadata** — extract BPM/key/loudness features → manifest
+- **✂️ Segment & Split** — bar-aligned segmenting + leak-free train/val/test
+
+**🎛️ Generate**
+- **🎛️ Generate** — MusicGen inference (prompt, guidance, sampling, batch, melody conditioning)
+- **🪄 Prompt builder** — curated templates + gallery with waveform miniatures
+- **📏 Check BPM** — tempo-drift check + time-stretch fix (needle gauge)
+- **🎬 Visualize** — waveforms, spectrograms, chords, beat grid, structure, stems, CLAP
+
+**🏷️ Curate**
+- **🏷️ Labels** — edit genre/mood/instrument labels against the controlled vocab
+- **🧹 Hygiene** — quality, dedup, drift, curation, leakage checks
+- **🎧 Listening** — A/B compare + star ratings to seed human ratings
+
+**📊 Evaluate**
+- **📊 Compare** — detected-vs-target BPM + stable-verdicts summary (reads MLflow)
+- **🏆 Leaderboard** — checkpoint ranking + per-tag CLAP radar
+- **🎯 Eval** — run the fixed prompt set with per-prompt progress + scheduled auto-run
+
+**🔬 Model**
+- **📈 Training** — HUD, CLAP trend, MLflow matrix, cost, coverage, drift
+- **🔬 Analytics** — embeddings, active learning, curation, checkpoint timeline
+
+**🪵 System**
+- **🪵 Logs** — live CLI tail + structured runlog events
+
+### UI features (70)
+
+**Batch 1 — Previews & audio (#1-10)** · waveform thumbnails, mel + chroma
+spectrograms, audio player grid, before/after waveform overlay, stem mixer,
+section timeline scrubber, live generation view, chord/beat-grid strip,
+piano-roll chromagram, onset/downbeat overlay.
+
+**Batch 2 — Interactive previews (#11-20)** · per-tag CLAP heat strip, segmented
+waveform with role labels, augmented-variant grid, re-synthesis preview,
+gallery miniatures, per-item progress bars, skeleton placeholders, animated
+count-up metrics, live fragment charts, pulsing live dot.
+
+**Batch 3 — Animation & motion (#21-30)** · confetti on eval completion, BPM
+needle gauge, SVG progress ring, scrolling ticker, pop-in metric cards,
+hover-lift cards, CSS tooltips, theme transition smoothing, live CLAP sparkline,
+auto-refreshing fragments.
+
+**Batch 4 — Training visuals (#31-40)** · CLAP trend curve, MLflow metrics
+panel, training HUD, LR schedule, weight-delta heatmap, cost chart, experiment
+matrix heatmap, drift timeline, coverage heatmap, train/val/test split donut.
+
+**Batch 5 — Analytics (#41-50)** · PCA embedding scatter, active-learning
+scatter, augmentation panel, leaderboard bar, curation histogram, checkpoint
+registry timeline, two-run overlay, early-stop curve, token gauge, model-size
+cost chart.
+
+**Batch 6 — Navigation (#51-60)** · collapsible grouped sidebar, nested
+sub-menus, pinned pages, contextual side panel, command-palette actions, history
+dropdown, sticky headers, inspector drawer, focus mode, sidebar mini-map.
+
+**Batch 7 — Polish & i18n (#61-70)** · focus mode (collapse chrome), sidebar
+mini-map, popover settings, arrow-key navigation, progress-aware sidebar
+(pipeline checklist), theme tokens (`.streamlit/config.toml`), OS theme sync,
+print/PDF export, responsive layout, i18n string table.
+
 ## CI
 
 GitHub Actions runs a fast smoke test (config, eval-set generation, label

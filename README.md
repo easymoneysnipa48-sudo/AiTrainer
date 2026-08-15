@@ -335,12 +335,177 @@ post-hoc: the generated audio is CLAP-scored against the negative text and
 flagged/re-generated when similarity ≥ `inference.negative_threshold` (0.25).
 `negative_retries` auto-regenerates with a new seed until clean.
 
+## Advanced commands (50)
+
+Every command below runs through the same CLI — `musictrain <cmd> --help` for
+full options. Results land under `metadata/`; the 🧹 **Hygiene** page surfaces
+drift / curation / leakage, and the 🪵 **Logs** page tails the structured runlog.
+
+### Batch 1 — Evaluation analytics (#1-10)
+
+```bash
+# #1-2 distribution metrics — FAD (CLAP or VGGish) + spectral KL
+musictrain metrics --ref data/clean --gen outputs/eval            # clap FAD
+musictrain metrics --ref data/clean --gen outputs/eval --fad vggish  # fadtk
+
+# #3-5 bootstrap CIs, Bayesian A/B (P(B > A)), two-sample KLD/MMD/1-NN
+musictrain significance --a old.jsonl --b new.jsonl
+musictrain significance --checkpoint-a ckpt-a --checkpoint-b ckpt-b
+
+# #6 meta-analysis — pool studies by their {delta, se}
+musictrain significance --meta study1.json study2.json
+
+# #7-9 prompt difficulty, section x BPM interaction, CLAP z-scores,
+#       auto-reject threshold calibration, negative mining
+musictrain difficulty
+
+# #10 adversarial (tricky) prompts appended to the eval set
+musictrain evalset --adversarial 10
+```
+
+### Batch 2 — Inference & training (#11-20)
+
+```bash
+# #11 larger models + bf16 dtype for memory headroom
+musictrain infer --model facebook/musicgen-large --dtype bf16 --prompt "…"
+
+# #12 LoRA fine-tune of the decoder on segments + labels (0 = dry run)
+musictrain finetune --steps 500
+
+# #13 merge 2+ checkpoints (weighted average of shards)
+musictrain merge --models ckpt-a ckpt-b --weights 0.5 0.5 --out checkpoints/merged
+
+# #14 prompt ensembling — n variants, pick the best CLAP
+musictrain sweep --kind ensemble --prompt "melodic trap chorus, 96 BPM" --n 3
+
+# #15 conditioning chaining — each step melody-conditions on the previous output
+musictrain sweep --kind chain --prompt "dark piano intro" --steps 3
+
+# #16 melody-from-audio — upload a reference clip on the dashboard Generate page
+
+# #17 negative mining — hardest prompts surface in `musictrain difficulty` output
+
+# #18 guidance-scale sweep          # #19 seed search
+musictrain sweep --kind sweep --guidance 1.5,3,4.5 --prompt "…"
+musictrain sweep --kind seeds --seeds 0,1,2,3 --prompt "…"
+
+# #20 deterministic caching — identical (model,prompt,seed) reuse the saved clip
+musictrain infer --cache --prompt "…" --seed 7
+```
+
+### Batch 3 — Data engineering (#21-30)
+
+```bash
+# #21 stems re-synthesis — re-mix Demucs stems with per-stem gain
+musictrain resynth --gain vocals=1.2 --gain drums=0.5
+musictrain resynth --instrumental          # drop vocals entirely
+
+# #22 audio-to-prompt inversion — features template + CLAP prompt retrieval
+musictrain invert --path data/clean/ref.wav
+
+# #23 active learning — rank unlabeled tracks by uncertainty + diversity
+musictrain active --top 20
+
+# #24 augmentation — pitch/stretch/noise/EQ/quiet training variants
+musictrain augment --ops pitch_up,stretch,noise,eq,quiet
+
+# #25 post-segment dedup — near-identical segments out of the fine-tune set
+musictrain dedup --segments
+
+# #26 auto-section labeling — map segments onto detected structure roles
+musictrain sections          # requires `musictrain analyze` + `musictrain segment`
+
+# #27 feature drift monitoring (KS test + PSI)
+musictrain drift --reference clean --current train
+
+# #28 curation score — 0-100 quality/novelty/coverage/dup ranking
+musictrain curation --top 20
+
+# #29 embedding cache refresh — prune stale, re-embed changed audio
+musictrain embed-refresh
+
+# #30 semi-supervised pseudo-labels + train/val/test leakage check
+musictrain labelprop --min-confidence 0.55
+musictrain labelprop --check-leakage
+```
+
+### Batch 4 — Model ops (#31-40)
+
+```bash
+# #31 checkpoint registry — index checkpoints/ with config sig + size
+musictrain registry
+
+# #32 eval gate — block promotion on regression (exit 1 = block; CI-friendly)
+musictrain gate --baseline ckpt-a --candidate ckpt-b
+
+# #33 early stopping on the CLAP series (patience + min-delta)
+musictrain early-stop --series 0.30,0.32,0.31,0.31 --patience 3
+
+# #34 weight diff — per-tensor max-abs delta between two checkpoints
+musictrain diff --a ckpt-a --b ckpt-b
+
+# #35 experiment matrix — flatten MLflow runs into rows x metrics
+musictrain matrix
+
+# #36 drift detector — CI gate that fails when features drift
+musictrain drift-check --reference clean --current train
+
+# #37 promotion report — markdown bundle of rank, significance, coverage
+musictrain promote --checkpoint facebook/musicgen-small --baseline ckpt-a
+
+# #38 eval snapshot archive — zip checkpoint + config + reports
+musictrain archive --checkpoint facebook/musicgen-small
+
+# #39 training monitor — CLAP trend over MLflow runs per checkpoint
+musictrain monitor
+
+# #40 model card — markdown adherence + section coverage for a checkpoint
+musictrain modelcard --checkpoint facebook/musicgen-small
+```
+
+### Batch 5 — Automation (#41-50)
+
+```bash
+# #41-42 FastAPI backend + job queue — POST /eval returns a job_id, poll /jobs/{id}
+musictrain serve --port 8000
+#   GET  /health  /inventory  /metrics  /leaderboard  /jobs
+#   POST /eval (section/seeds/limit)  /generate (prompt/seed)  /jobs/{id}/cancel
+
+# #43 multi-machine sync — Mac preps data + evals, Ubuntu trains (rsync plan)
+musictrain package --host user@ubuntu
+
+# #44 MLflow model registry — register checkpoints, move versions through stages
+musictrain register --checkpoint facebook/musicgen-small --stage Staging
+musictrain models                                    # list models + stages
+musictrain stage --name musicgen-style-models --version 1 --stage Production
+
+# #45 W&B export of eval aggregates (CSV fallback when not logged in)
+musictrain export-eval --project musictrain
+
+# #46 structured JSON runlog — every job/run appended to metadata/runlog.jsonl
+musictrain runlog --event job
+
+# #47 alerting — Slack webhook / SMTP / file when metrics cross thresholds
+musictrain alert --min-clap 0.30 --max-dev 0.20 --slack-webhook https://hooks.slack.com/…
+
+# #48 cost tracking — kWh estimates from clip count x model size
+musictrain cost --task eval --model musicgen-medium --clips 44
+
+# #49 incremental eval — keep passing rows, re-run only failed/new prompts
+musictrain eval --incremental --seeds 3
+
+# #50 CI regression gate — test suite + fixture gate on every push/PR
+#     (.github/workflows/eval-gate.yml, .github/scripts/run_gate.py)
+```
+
 ## CI
 
 GitHub Actions runs a fast smoke test (config, eval-set generation, label
-validation, BPM check, inventory, report export) on every push and pull request.
-A heavier `eval-smoke` job — a 1-prompt MusicGen generation on CPU — runs
-on-demand via **Actions → CI → Run workflow**.
+validation, BPM check, inventory, report export) on every push and pull request,
+plus an **eval regression gate** (`.github/workflows/eval-gate.yml`) that blocks
+a candidate when its BPM adherence regresses past tolerance. A heavier
+`eval-smoke` job — a 1-prompt MusicGen generation on CPU — runs on-demand via
+**Actions → CI → Run workflow**.
 
 ## Notes
 

@@ -536,12 +536,15 @@ def cmd_loudnorm(args) -> int:
 
 
 def cmd_dedup(args) -> int:
-    from .dedup import find_duplicates
+    from .dedup import dedup_segments, find_duplicates
 
     cfg = _build_config(args)
     if args.move:
         cfg.dedup.action = "move"
-    find_duplicates(cfg.project_root, cfg, which=args.dir)
+    if args.segments:
+        dedup_segments(cfg.project_root, cfg, which="segments")
+    else:
+        find_duplicates(cfg.project_root, cfg, which=args.dir)
     return 0
 
 
@@ -1225,6 +1228,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("dedup", help="Find exact + near-duplicate audio")
     add_common(sp)
     sp.add_argument("--dir", default="clean", help="data/<dir> to scan")
+    sp.add_argument("--segments", action="store_true",
+                    help="Dedup data/segments instead (post-segment dedup, advanced #25)")
     sp.add_argument("--move", action="store_true", help="Move non-canonical copies to data/dupes/")
     sp.set_defaults(func=cmd_dedup)
 

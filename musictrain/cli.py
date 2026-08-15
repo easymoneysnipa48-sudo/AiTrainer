@@ -1131,6 +1131,18 @@ def cmd_backup(args) -> int:
     return 1 if result.get("error") else 0
 
 
+def cmd_audioext(args) -> int:
+    from .audioext import run
+
+    cfg = _build_config(args)
+    result = run(
+        cfg, args.task, path=args.path or "", bpm=args.bpm, key=args.key,
+        semitones=args.semitones, tempo_ratio=args.tempo_ratio,
+        which=args.which, dest=args.dest or "", limit=args.limit,
+    )
+    return 1 if result.get("error") else 0
+
+
 def cmd_cost(args) -> int:
     from .cost import estimate, log_cost, cost_summary
 
@@ -1893,6 +1905,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", help="Overwrite existing files (restore)")
     sp.add_argument("--no-mlflow", action="store_true", help="Exclude local MLflow state (snapshot)")
     sp.set_defaults(func=cmd_backup)
+
+    # audioext (gap #20-#24)
+    sp = sub.add_parser(
+        "audioext",
+        help="Extended audio/data: diarize, midi, augment, bundle, verify-bundle, fad-cache",
+    )
+    add_common(sp)
+    sp.add_argument("--task", required=True,
+                    choices=["diarize", "midi", "augment", "bundle", "verify-bundle", "fad-cache"])
+    sp.add_argument("--path", default="", help="Audio file (diarize/midi)")
+    sp.add_argument("--bpm", type=float, default=120.0, help="BPM (augment)")
+    sp.add_argument("--key", default="C major", help="Key, e.g. 'A minor' (augment)")
+    sp.add_argument("--semitones", type=int, default=0, help="Transpose semitones (augment)")
+    sp.add_argument("--tempo-ratio", type=float, default=None, help="Tempo ratio fold (augment)")
+    sp.add_argument("--which", default="clean", help="data/<dir> (bundle/fad-cache)")
+    sp.add_argument("--dest", default="", help="Output archive (bundle/verify-bundle)")
+    sp.add_argument("--limit", type=int, default=0, help="File limit (fad-cache)")
+    sp.set_defaults(func=cmd_audioext)
 
     # cost
     sp = sub.add_parser("cost", help="Estimate + log run cost (#48)")

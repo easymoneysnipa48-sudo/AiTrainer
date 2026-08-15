@@ -640,6 +640,97 @@ def cmd_deep(args) -> int:
     return 0 if records else 1
 
 
+def cmd_dataeng(args) -> int:
+    from . import dataeng as de
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+    task = args.task
+    (root / "metadata").mkdir(parents=True, exist_ok=True)
+
+    if task == "transcribe":
+        rec = de.transcribe(Path(args.path).resolve(), model_name=args.model)
+        if rec:
+            console.ok(f"ASR: {rec['text'][:120]}")
+        return 0 if rec else 1
+
+    if task == "dedup":
+        from .embeddings import embed_dir
+
+        emb = embed_dir(root, cfg, which=args.dir, limit=args.limit)
+        if not emb:
+            console.error("No embeddings produced.")
+            return 1
+        import numpy as np
+
+        mat = np.stack(list(emb.values()))
+        report = de.corpus_dedup(mat, list(emb.keys()), threshold=args.threshold)
+        (root / "metadata" / "corpus_duplicates.json").write_text(json.dumps(report, indent=2))
+        console.ok(f"Corpus dedup: {report['n_duplicates']} duplicate(s) in {report['n']} files")
+        return 0
+
+    if task == "quality":
+        from .audio.inventory import AUDIO_GLOB
+
+        target = root / "data" / args.dir
+        files = [p for pat in AUDIO_GLOB for p in sorted(target.glob(pat))]
+        recs = [de.sample_quality(p) for p in files[:args.limit] if args.limit] or \
+               [de.sample_quality(p) for p in files]
+        (root / "metadata" / "sample_quality.json").write_text(json.dumps(recs, indent=2))
+        console.ok(f"Sample quality -> metadata/sample_quality.json ({len(recs)} files)")
+        return 0
+
+    if task == "snapshot":
+        return 0 if de.snapshot(root, cfg, label=args.label, which=args.dir) else 1
+
+    if task == "expand":
+        prompts = de.expand_prompts(args.n, seed=args.seed)
+        out = root / "metadata" / "synthetic_prompts.jsonl"
+        with out.open("w") as fh:
+            for p in prompts:
+                fh.write(json.dumps(p) + "\n")
+        console.ok(f"Expanded prompts -> {out.relative_to(root)} ({len(prompts)})")
+        return 0
+
+    if task == "cooccur":
+        from .report import load_results
+
+        rows = load_results(root)
+        report = de.tag_cooccurrence(rows)
+        (root / "metadata" / "cooccurrence.json").write_text(json.dumps(report, indent=2))
+        console.ok(f"Co-occurrence -> metadata/cooccurrence.json ({report['n_combos']} combos)")
+        return 0
+
+    if task == "sample":
+        from .report import load_results
+
+        rows = load_results(root)
+        labels = [r.get("section") or "?" for r in rows]
+        idx = de.balanced_sample(rows, labels, args.n, seed=args.seed)
+        picked = [rows[i] for i in idx]
+        (root / "metadata" / "balanced_sample.json").write_text(json.dumps(picked, indent=2))
+        console.ok(f"Balanced sample -> metadata/balanced_sample.json ({len(picked)} rows)")
+        return 0
+
+    if task == "provenance":
+        from .report import load_results
+
+        rows = de.annotate_provenance(load_results(root), source_url=args.source,
+                                      license_name=args.license, origin=args.origin)
+        (root / "metadata" / "provenance.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in rows) + "\n"
+        )
+        console.ok(f"Provenance -> metadata/provenance.jsonl ({len(rows)} rows)")
+        return 0
+
+    if task == "annotate":
+        rows = de.pre_annotate(root, cfg, which=args.dir, limit=args.limit)
+        return 0 if rows else 1
+
+    console.error(f"Unknown task: {task}")
+    return 1
+
+
 def cmd_resynth(args) -> int:
     from .resynth import resynth, rebuild_instrumental
 
@@ -1354,6 +1445,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--path", default=None, help="Analyze a single audio file")
     sp.add_argument("--limit", type=int, default=0)
     sp.set_defaults(func=cmd_deep)
+
+    # dataeng
+    sp = sub.add_parser(
+        "dataeng",
+        help="Data-engineering tasks: transcribe, dedup, quality, snapshot, "
+             "expand, cooccur, sample, provenance, annotate (advanced #31-#40)",
+    )
+    add_common(sp)
+    sp.add_argument("--task", required=True,
+                    choices=["transcribe", "dedup", "quality", "snapshot", "expand",
+                             "cooccur", "sample", "provenance", "annotate"])
+    sp.add_argument("--dir", default="clean", help="data/<dir> to operate on")
+    sp.add_argument("--path", default=None, help="Single file (transcribe)")
+    sp.add_argument("--model", default="base", help="Whisper model (transcribe)")
+    sp.add_argument("--limit", type=int, default=0)
+    sp.add_argument("--threshold", type=float, default=0.97, help="Dedup similarity threshold")
+    sp.add_argument("--label", default=None, help="Snapshot label")
+    sp.add_argument("--n", type=int, default=10, help="Number of items (expand/sample)")
+    sp.add_argument("--seed", type=int, default=42)
+    sp.add_argument("--source", default="", help="Default source_url (provenance)")
+    sp.add_argument("--license", default="", help="Default license (provenance)")
+    sp.add_argument("--origin", default="", help="Default origin (provenance)")
+    sp.set_defaults(func=cmd_dataeng)
 
     # score
     sp = sub.add_parser("score", help="Score audio-text similarity with CLAP")

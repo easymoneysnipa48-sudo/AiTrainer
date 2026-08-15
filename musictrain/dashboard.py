@@ -2397,6 +2397,39 @@ def page_training() -> None:
     trainviz.lr_schedule()
 
 
+
+def page_analytics() -> None:
+    """Batch 5 - analytics: embeddings, active learning, curation, leaderboard, checkpoints."""
+    from musictrain import analyteviz
+
+    _page_header("🔬", "Analytics",
+                 "Corpus and model analytics — embeddings, active learning, curation, leaderboard and checkpoints.")
+    cfg = load_cfg()
+
+    st.subheader("Leaderboard")
+    analyteviz.leaderboard_bar(cfg)
+    analyteviz.two_run_overlay(cfg)
+
+    t_emb, t_active, t_aug, t_cur, t_ckpt, t_train = st.tabs(
+        ["🧬 Embeddings", "🎯 Active learning", "🔀 Augmentation",
+         "⭐ Curation", "🗂️ Checkpoints", "⏱️ Training"])
+
+    with t_emb:
+        analyteviz.umap_scatter(cfg)
+    with t_active:
+        analyteviz.active_scatter(cfg)
+    with t_aug:
+        analyteviz.augmentation_panel()
+    with t_cur:
+        analyteviz.curation_histogram(cfg)
+    with t_ckpt:
+        analyteviz.checkpoint_timeline(cfg)
+    with t_train:
+        analyteviz.early_stop_curve()
+        analyteviz.token_gauge(cfg)
+        analyteviz.model_size_cost(cfg)
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
@@ -2411,6 +2444,7 @@ PAGES = {
     "🧹 Hygiene": page_hygiene,
     "🏆 Leaderboard": page_leaderboard,
     "📈 Training": page_training,
+    "🔬 Analytics": page_analytics,
     "🎯 Eval": page_eval,
     "🎧 Listening": page_listening,
     "🪵 Logs": page_logs,

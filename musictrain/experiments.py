@@ -124,6 +124,21 @@ def log_dataset(cfg: Config, records: List[dict]) -> None:
         console.warn(f"MLflow logging failed: {exc}")
 
 
+def log_metric(cfg: Config, key: str, value: float, step: Optional[int] = None,
+               run_name: str = "metric") -> None:
+    """Log a single metric to a fresh MLflow run (used by training sweeps)."""
+    if not cfg.mlflow.enabled:
+        return
+    ml = _configure(cfg)
+    if ml is None:
+        return
+    try:
+        with ml.start_run(run_name=run_name):
+            ml.log_metric(key, value, step=step)
+    except Exception as exc:  # noqa: BLE001
+        console.warn(f"MLflow metric logging failed: {exc}")
+
+
 def search_runs(cfg: Config):
     """Return a normalized DataFrame of MLflow runs for the current experiment.
 

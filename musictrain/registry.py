@@ -182,3 +182,66 @@ def archive(root: Path, cfg: Config, checkpoint: str) -> Optional[Path]:
 
     console.ok(f"Archived -> {out.relative_to(root)} ({out.stat().st_size / 1e6:.1f} MB)")
     return out
+
+
+def prune_checkpoints(root: Path, cfg: Config, keep: int = 3,
+                      delete: bool = False) -> Dict[str, object]:
+    """Advanced #25 — keep only the top-N checkpoints, archive the rest.
+
+    Ranking key is the leaderboard composite score when available, otherwise
+    last-modified time (newest = best). The losers are archived (default) or
+    deleted outright with ``delete=True``. Never prunes below ``keep`` items.
+    """
+    ckpts_dir = root / "checkpoints"
+    if not ckpts_dir.exists():
+        console.warn("No checkpoints/ directory — nothing to prune.")
+        return {"kept": [], "pruned": [], "note": "no checkpoints"}
+
+    dirs = [p for p in ckpts_dir.iterdir() if p.is_dir() and p.name != "archives"]
+    if len(dirs) <= keep:
+        console.ok(f"{len(dirs)} checkpoint(s) <= keep={keep} — nothing to prune.")
+        return {"kept": [d.name for d in dirs], "pruned": []}
+
+    # leaderboard score lookup (fall back to mtime)
+    scores: Dict[str, float] = {}
+    lb_path = root / "metadata" / "leaderboard.json"
+    if lb_path.exists():
+        try:
+            lb = json.loads(lb_path.read_text())
+            for e in lb.get("leaderboard", []):
+                scores[e["checkpoint"]] = float(e.get("score", 0.0))
+        except Exception:  # noqa: BLE001
+            scores = {}
+
+    def _rank(d: Path) -> float:
+        return scores.get(d.name, d.stat().st_mtime)
+
+    ordered = sorted(dirs, key=_rank, reverse=True)
+    kept, pruned = ordered[:keep], ordered[keep:]
+
+    archives = ckpts_dir / "archives"
+    pruned_names = []
+    for d in pruned:
+        if delete:
+            shutil.rmtree(d, ignore_errors=True)
+            console.warn(f"Deleted {d.name}")
+        else:
+            archives.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            target = archives / f"{d.name}_{stamp}"
+            shutil.move(str(d), str(target))
+            console.info(f"Archived {d.name} -> {target.name}")
+        pruned_names.append(d.name)
+
+    report = {
+        "keep": keep,
+        "kept": [d.name for d in kept],
+        "pruned": pruned_names,
+        "mode": "delete" if delete else "archive",
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    out = root / "metadata" / "prune_report.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2))
+    console.ok(f"Pruned {len(pruned)} checkpoint(s), kept {len(kept)} -> metadata/prune_report.json")
+    return report

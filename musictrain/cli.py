@@ -150,6 +150,11 @@ def cmd_finetune(args) -> int:
     result = train(
         cfg, steps=args.steps, lr=args.lr, limit=args.limit,
         out_dir=Path(args.out) if args.out else None, r=args.r,
+        warmup_steps=args.warmup, lr_mode=args.lr_mode,
+        gradient_checkpointing=args.grad_ckpt, bf16=args.bf16,
+        stream=args.stream, curriculum=args.curriculum, ema=args.ema,
+        ema_decay=args.ema_decay, ddp=args.ddp,
+        cfg_base=args.cfg_base, cfg_sweep=args.cfg_sweep,
     )
     return 0 if result else 1
 
@@ -750,6 +755,14 @@ def cmd_archive(args) -> int:
     return 0
 
 
+def cmd_prune(args) -> int:
+    from .registry import prune_checkpoints
+
+    cfg = _build_config(args)
+    report = prune_checkpoints(cfg.project_root, cfg, keep=args.keep, delete=args.delete)
+    return 0 if report else 1
+
+
 def cmd_gate(args) -> int:
     from .gates import eval_gate
 
@@ -1181,6 +1194,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=0, help="Limit training pairs")
     sp.add_argument("--out", default=None, help="Adapter output dir (default adapters/)")
     sp.add_argument("--r", type=int, default=8, help="LoRA rank")
+    sp.add_argument("--warmup", type=int, default=0, help="LR warmup steps (#23)")
+    sp.add_argument("--lr-mode", choices=["constant", "cosine"], default="cosine",
+                    help="LR schedule after warmup (#23)")
+    sp.add_argument("--grad-ckpt", action="store_true", help="Gradient checkpointing (#22)")
+    sp.add_argument("--bf16", action="store_true", help="bf16 mixed precision on CUDA (#24)")
+    sp.add_argument("--stream", action="store_true", help="Stream batches from disk (#26)")
+    sp.add_argument("--curriculum", action="store_true", help="Easy-first curriculum ordering (#27)")
+    sp.add_argument("--ema", action="store_true", help="Weight EMA (#29)")
+    sp.add_argument("--ema-decay", type=float, default=0.999)
+    sp.add_argument("--ddp", action="store_true", help="Multi-GPU DDP (#30)")
+    sp.add_argument("--cfg-base", type=float, default=3.0, help="Base guidance scale for sweep (#28)")
+    sp.add_argument("--cfg-sweep", type=int, default=0, help="Number of CFG candidates to log (#28)")
     sp.set_defaults(func=cmd_finetune)
 
     # merge (advanced #13)
@@ -1425,6 +1450,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.add_argument("--checkpoint", required=True, help="Checkpoint dir name")
     sp.set_defaults(func=cmd_archive)
+
+    # prune
+    sp = sub.add_parser("prune", help="Keep top-N checkpoints by score, archive the rest (#25)")
+    add_common(sp)
+    sp.add_argument("--keep", type=int, default=3, help="Number of checkpoints to keep")
+    sp.add_argument("--delete", action="store_true", help="Delete instead of archiving")
+    sp.set_defaults(func=cmd_prune)
 
     # gate
     sp = sub.add_parser("gate", help="Block checkpoint promotion on eval regression")

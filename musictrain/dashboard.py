@@ -151,7 +151,14 @@ _LIGHT_CSS = """
 
 def _theme_css() -> str:
     light = st.session_state.get("mt_theme") == "light"
-    return _LIGHT_CSS if light else _DARK_CSS
+    base = _LIGHT_CSS if light else _DARK_CSS
+    return base + """
+<style>
+  .stApp, [data-testid="stSidebar"], [data-testid="stMetric"], .stButton > button,
+  [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
+  [data-testid="stMarkdownContainer"] { transition: background-color .3s ease, color .3s ease, border-color .3s ease; }
+</style>
+"""
 
 
 def _toggle_theme() -> None:
@@ -1137,11 +1144,14 @@ def page_generate() -> None:
                 if saved:
                     _audio_grid(saved, cols=4)
 
-    # recent outputs grid (feature 15)
+    # recent outputs grid (feature 15) + scrolling ticker (feature 24)
     recent = sorted((ROOT / "outputs").glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True)[:8]
     if recent:
         st.markdown("---")
         st.subheader("Recent outputs")
+        from musictrain import viz
+
+        viz.ticker([p.name for p in recent], "gen")
         _audio_grid(recent, cols=4)
 
 
@@ -1185,6 +1195,11 @@ def page_check() -> None:
         else:
             c1, c2 = st.columns([1, 2])
             with c1:
+                if report.get("target_bpm"):
+                    from musictrain import viz
+
+                    viz.bpm_gauge(float(report["detected_bpm"]),
+                                  float(report["target_bpm"]), "chk")
                 st.json(report)
                 _copy_button(json.dumps(report, indent=2), "chk_copy")
             with c2:
@@ -2151,6 +2166,9 @@ def page_eval() -> None:
                 f"Eval finished: {len(results)} prompts, {ok} in-tolerance by majority "
                 "-> metadata/eval_results.jsonl (previous file backed up to .bak)"
             )
+            from musictrain import viz
+
+            viz.confetti("eval")
             cols = [c for c in ("prompt", "section", "bpm_target", "detected_bpm", "deviation", "clap_score", "status") if c in results[0]]
             st.dataframe(pd.DataFrame(results)[cols], width="stretch")
 

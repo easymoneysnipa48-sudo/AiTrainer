@@ -491,3 +491,182 @@ def live_dot(text: str = "live") -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+# --------------------------------------------------------------------------- #
+# 21 — CSS confetti burst (self-contained, no CDN)
+# --------------------------------------------------------------------------- #
+def confetti(key: str) -> None:
+    colors = ["#ff5c8a", "#5b8cff", "#ffb020", "#2ad4c4", "#7c5cff", "#7ee2a8"]
+    pieces = "".join(
+        f'<span style="left:{(i * 37) % 100}%;background:{colors[i % len(colors)]};'
+        f'animation-delay:{(i * 0.05) % 0.9:.2f}s;transform:rotate({(i * 47) % 360}deg)"></span>'
+        for i in range(24)
+    )
+    html = f"""
+    <style>
+      @keyframes mtconfetti {{ 0% {{transform:translateY(-8vh) rotate(0);opacity:1}}
+        100% {{transform:translateY(70vh) rotate(720deg);opacity:0}} }}
+      .mt-confetti {{ position:fixed;top:0;left:0;right:0;height:0;z-index:9999;pointer-events:none }}
+      .mt-confetti span {{ position:absolute;width:8px;height:14px;border-radius:2px;opacity:0;
+        animation:mtconfetti 2.2s ease-in forwards }}
+    </style>
+    <div class="mt-confetti">{pieces}</div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# 22 — animated BPM needle gauge
+# --------------------------------------------------------------------------- #
+def bpm_gauge(bpm: float, target: float, key: str) -> None:
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    if not target:
+        st.caption("set a target BPM to see the gauge")
+        return
+    ratio = float(bpm) / float(target)
+    theta = np.linspace(0, np.pi, 200)
+    fig, ax = plt.subplots(figsize=(4, 2.4))
+    ax.plot(np.cos(theta), np.sin(theta), color="#2a2f45", lw=14, solid_capstyle="round")
+    ang = np.pi * (1 - min(max(ratio, 0.0), 2.0) / 2.0)
+    ax.annotate("", xy=(np.cos(ang), np.sin(ang)), xytext=(0, 0),
+                arrowprops=dict(arrowstyle="-|>", color="#ff5c8a", lw=3))
+    for frac, lbl in ((0.0, "0"), (0.5, "1x"), (1.0, "2x")):
+        a = np.pi * (1 - frac)
+        ax.text(np.cos(a) * 1.18, np.sin(a) * 1.18, lbl, ha="center", va="center",
+                color="#9aa3c0", fontsize=8)
+    ax.text(0, -0.2, f"{bpm:.1f} / {target:.1f} BPM", ha="center", va="top",
+            color="#e6e9f2", fontsize=9, weight="bold")
+    ax.set_xlim(-1.25, 1.25)
+    ax.set_ylim(-0.5, 1.3)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    st.pyplot(fig)
+
+
+# --------------------------------------------------------------------------- #
+# 23 — SVG progress ring
+# --------------------------------------------------------------------------- #
+def progress_ring(frac: float, label: str = "", key: str = "") -> None:
+    import math
+
+    frac = max(0.0, min(1.0, float(frac)))
+    r = 34
+    c = 2 * math.pi * r
+    off = c * (1 - frac)
+    svg = f"""
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+      <svg width="84" height="84" viewBox="0 0 84 84">
+        <circle cx="42" cy="42" r="{r}" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="8"/>
+        <circle cx="42" cy="42" r="{r}" fill="none" stroke="#5b8cff" stroke-width="8"
+          stroke-linecap="round" stroke-dasharray="{c:.2f}" stroke-dashoffset="{off:.2f}"
+          transform="rotate(-90 42 42)" style="transition:stroke-dashoffset .4s ease"/>
+        <text x="42" y="46" text-anchor="middle" fill="#eef1fb" font-size="18" font-weight="700">
+          {int(frac * 100)}%
+        </text>
+      </svg>
+      <div style="color:#9aa3c0;font-size:.72rem">{label}</div>
+    </div>
+    """
+    st.markdown(svg, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# 24 — scrolling ticker / marquee
+# --------------------------------------------------------------------------- #
+def ticker(items: list, key: str = "") -> None:
+    if not items:
+        return
+    joined = "   •   ".join(str(i)[:44] for i in items)
+    html = f"""
+    <style>
+      @keyframes mtticker {{ 0% {{transform:translateX(100%)}} 100% {{transform:translateX(-100%)}} }}
+      .mt-ticker {{ overflow:hidden;white-space:nowrap;border:1px solid rgba(255,255,255,.08);
+        border-radius:10px;background:rgba(255,255,255,.04);padding:7px 0 }}
+      .mt-ticker span {{ display:inline-block;padding-left:100%;
+        animation:mtticker 22s linear infinite;color:#dfe3ee;font-size:.8rem }}
+    </style>
+    <div class="mt-ticker"><span>{joined}</span></div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# 25 — animated metric card (pop-in)
+# --------------------------------------------------------------------------- #
+def metric_card(label: str, value: str, delta: str = "", key: str = "") -> None:
+    d = f'<div style="color:#7ee2a8;font-size:.8rem">{delta}</div>' if delta else ""
+    html = f"""
+    <style>
+      @keyframes mtpop {{ 0% {{opacity:0;transform:translateY(6px) scale(.97)}}
+        100% {{opacity:1;transform:translateY(0) scale(1)}} }}
+      .mt-card {{ background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);
+        border-radius:14px;padding:14px 16px;animation:mtpop .35s ease both }}
+    </style>
+    <div class="mt-card">
+      <div style="font-size:.72rem;color:#9aa3c0;text-transform:uppercase;letter-spacing:.04em">{label}</div>
+      <div style="font-size:1.5rem;font-weight:700;color:#eef1fb">{value}</div>
+      {d}
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# 26 — hover-lift card
+# --------------------------------------------------------------------------- #
+def hover_card(title: str, body: str, key: str = "") -> None:
+    html = f"""
+    <style>
+      .mt-hover {{ background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);
+        border-radius:14px;padding:14px 16px;
+        transition:transform .18s ease, box-shadow .18s ease, border-color .18s ease }}
+      .mt-hover:hover {{ transform:translateY(-3px);border-color:#6ea8ff;
+        box-shadow:0 8px 24px rgba(0,0,0,.3) }}
+    </style>
+    <div class="mt-hover"><div style="font-weight:600;color:#eef1fb">{title}</div>
+      <div style="color:#9aa3c0;font-size:.85rem;margin-top:4px">{body}</div></div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# 27 — CSS tooltip
+# --------------------------------------------------------------------------- #
+def tooltip(text: str, tip: str, key: str = "") -> None:
+    html = f"""
+    <style>
+      .mt-tt {{ position:relative;display:inline-block;border-bottom:1px dotted #6ea8ff;cursor:help }}
+      .mt-tt .mt-ttip {{ visibility:hidden;opacity:0;position:absolute;bottom:125%;left:50%;
+        transform:translateX(-50%) translateY(4px);background:#1a2036;color:#e6e9f2;
+        padding:6px 10px;border-radius:8px;font-size:.78rem;white-space:nowrap;
+        transition:opacity .18s ease, transform .18s ease;box-shadow:0 4px 16px rgba(0,0,0,.4) }}
+      .mt-tt:hover .mt-ttip {{ visibility:visible;opacity:1;transform:translateX(-50%) translateY(0) }}
+    </style>
+    <span class="mt-tt">{text}<span class="mt-ttip">{tip}</span></span>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# 29 — live-polling CLAP sparkline fragment
+# --------------------------------------------------------------------------- #
+@st.fragment(run_every=5.0)
+def live_sparkline(df, key: str = "") -> None:
+    import altair as alt
+
+    d = df.dropna(subset=["clap_score"])
+    if d.empty:
+        st.caption("no CLAP data yet")
+        return
+    d = d.reset_index().rename(columns={"index": "run"})
+    chart = (
+        alt.Chart(d)
+        .mark_line(point=True, color="#7c5cff")
+        .encode(x=alt.X("run:Q", axis=None),
+                y=alt.Y("clap_score:Q", scale=alt.Scale(zero=False)))
+        .properties(height=90)
+    )
+    st.altair_chart(chart, width="stretch", key=f"lspark_{key}")

@@ -190,6 +190,32 @@ def cmd_tuning(args) -> int:
     return 0
 
 
+def cmd_evalx(args) -> int:
+    from . import evalx
+
+    cfg = _build_config(args)
+    result = evalx.run(
+        cfg.project_root, cfg, args.task,
+        clap=args.clap,
+        clipping=args.clipping,
+        silence=args.silence,
+        snr_db=args.snr_db,
+        a_wins=args.a_wins,
+        b_wins=args.b_wins,
+        ties=args.ties,
+        threshold=args.threshold,
+        n=args.n,
+        seed=args.seed,
+        prompts=args.prompts,
+        ref_dir=Path(args.ref) if args.ref else None,
+        gen_dir=Path(args.gen) if args.gen else None,
+        limit=args.limit,
+    )
+    if result.get("error"):
+        return 1
+    return 0
+
+
 def cmd_merge(args) -> int:
     from .merge import merge
 
@@ -1411,6 +1437,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--vram-bytes", type=int, default=0, help="VRAM budget for grad-accum plan")
     sp.add_argument("--dtype", default="fp32", choices=["fp32", "fp16", "bf16"])
     sp.set_defaults(func=cmd_tuning)
+
+    # evalx (gap #8-#13)
+    sp = sub.add_parser(
+        "evalx",
+        help="Extended eval: mos, ab, leakage, robust, fad-gate, genre-gate",
+    )
+    add_common(sp)
+    sp.add_argument("--task", required=True,
+                    choices=["mos", "ab", "leakage", "robust", "fad-gate", "genre-gate"])
+    sp.add_argument("--clap", type=float, default=None, help="CLAP score (mos)")
+    sp.add_argument("--clipping", type=float, default=0.0, help="Clip fraction 0..1 (mos)")
+    sp.add_argument("--silence", type=float, default=0.0, help="Silence fraction 0..1 (mos)")
+    sp.add_argument("--snr-db", type=float, default=None, help="SNR dB (mos)")
+    sp.add_argument("--a-wins", type=int, default=0, help="A wins (ab)")
+    sp.add_argument("--b-wins", type=int, default=0, help="B wins (ab)")
+    sp.add_argument("--ties", type=int, default=0, help="Ties (ab)")
+    sp.add_argument("--threshold", type=float, default=None,
+                    help="Leakage similarity (default .95) or FAD gate (default 10.0)")
+    sp.add_argument("--n", type=int, default=0, help="Number of prompts to perturb (robust)")
+    sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--prompts", nargs="*", default=None, help="Prompts to perturb (robust)")
+    sp.add_argument("--ref", default=None, help="Reference audio dir (fad-gate)")
+    sp.add_argument("--gen", default=None, help="Generated audio dir (fad-gate)")
+    sp.add_argument("--limit", type=int, default=0, help="File limit per dir (fad-gate)")
+    sp.set_defaults(func=cmd_evalx)
 
     # merge (advanced #13)
     sp = sub.add_parser(

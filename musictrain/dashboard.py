@@ -2361,6 +2361,42 @@ def page_visualize() -> None:
         viz.live_generation_view(str(ROOT / "outputs"), "page")
 
 
+
+def page_training() -> None:
+    """Batch 4 - training visuals: HUD, CLAP trend, MLflow matrix, cost, coverage, drift."""
+    from musictrain import trainviz
+
+    _page_header("📈", "Training",
+                 "Model training and experiment health — read live from MLflow and local metadata.")
+    cfg = load_cfg()
+    trainviz.training_hud(cfg)
+
+    st.markdown("---")
+    st.subheader("CLAP trend (eval runs)")
+    trainviz.clap_trend(cfg)
+
+    t_ml, t_cost, t_cov, t_drift = st.tabs(
+        ["🧪 Experiments", "⚡ Cost", "🗺️ Coverage", "📉 Drift"])
+
+    with t_ml:
+        trainviz.matrix_heatmap(cfg)
+        st.markdown("#### Recent runs")
+        trainviz.metrics_panel(cfg)
+    with t_cost:
+        trainviz.cost_chart(cfg)
+    with t_cov:
+        trainviz.coverage_heatmap(cfg)
+        st.markdown("#### Split")
+        trainviz.split_donut(cfg)
+    with t_drift:
+        trainviz.drift_timeline(cfg)
+        st.markdown("#### Weight delta")
+        trainviz.weight_diff_heatmap(cfg)
+
+    st.markdown("#### LR schedule")
+    trainviz.lr_schedule()
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
@@ -2374,6 +2410,7 @@ PAGES = {
     "📊 Compare": page_compare,
     "🧹 Hygiene": page_hygiene,
     "🏆 Leaderboard": page_leaderboard,
+    "📈 Training": page_training,
     "🎯 Eval": page_eval,
     "🎧 Listening": page_listening,
     "🪵 Logs": page_logs,

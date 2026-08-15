@@ -812,7 +812,7 @@ def cmd_register(args) -> int:
     from .registry_ml import register_model
 
     cfg = _build_config(args)
-    register_model(cfg, args.checkpoint, stage=args.stage)
+    register_model(cfg, args.checkpoint, stage=args.stage, update=args.update)
     return 0
 
 
@@ -1438,6 +1438,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(sp)
     sp.add_argument("--checkpoint", required=True, help="Checkpoint dir name in checkpoints/")
     sp.add_argument("--stage", default="None", help="None | Staging | Production | Archived")
+    sp.add_argument("--update", action="store_true",
+                    help="Refresh the latest version with the current eval summary instead of creating a new version")
     sp.set_defaults(func=cmd_register)
 
     # models

@@ -94,11 +94,12 @@ def test_json_log_roundtrip(tmp_path):
 # --------------------------------------------------------------------------- #
 # 45 — export (CSV fallback)
 # --------------------------------------------------------------------------- #
-def _eval_rows(checkpoint, claps, devs):
+def _eval_rows(checkpoint, claps, devs, statuses=None):
+    statuses = statuses or ["ok"] * len(claps)
     return [
         {"checkpoint": checkpoint, "prompt": f"p{i}", "bpm_target": 96,
-         "clap_score": c, "deviation": d, "status": "ok", "section": "chorus"}
-        for i, (c, d) in enumerate(zip(claps, devs))
+         "clap_score": c, "deviation": d, "status": s, "section": "chorus"}
+        for i, (c, d, s) in enumerate(zip(claps, devs, statuses))
     ]
 
 
@@ -234,6 +235,37 @@ def test_resolve_model_dir_hf_cache(tmp_path, monkeypatch):
 
     # unknown -> None
     assert _resolve_model_dir(cfg, "nope/does-not-exist") is None
+
+
+# --------------------------------------------------------------------------- #
+# 44 — registry eval summary + describe
+# --------------------------------------------------------------------------- #
+def test_eval_summary_and_describe(tmp_path):
+    from musictrain.config import Config
+    from musictrain.registry_ml import _describe, _eval_summary
+
+    meta = tmp_path / "metadata"
+    meta.mkdir()
+    rows = _eval_rows("v1", [0.5, 0.6, 0.4], [0.05, 0.08, 0.5], statuses=["ok", "ok", "rejected"])
+    (meta / "eval_results.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows)
+    )
+    cfg = Config()
+    cfg.project_root = tmp_path
+    summary = _eval_summary(cfg, "v1")
+    assert summary is not None
+    assert summary["n_rows"] == 3
+    assert summary["ok_count"] == 2
+    assert summary["ok_pct"] == pytest.approx(round(2 / 3, 4))
+    assert summary["mean_clap"] == pytest.approx(0.5)
+    assert summary["mean_abs_deviation"] == pytest.approx(0.21)
+
+    desc = _describe("v1", summary)
+    assert "v1" in desc and "67%" in desc and "0.21" in desc
+    assert _describe("v1", None) == "checkpoint v1"
+
+    # unknown checkpoint -> no summary
+    assert _eval_summary(cfg, "nope") is None
 
 
 # --------------------------------------------------------------------------- #

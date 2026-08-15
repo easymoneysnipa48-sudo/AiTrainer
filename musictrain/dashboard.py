@@ -2221,6 +2221,89 @@ def page_logs() -> None:
         _runlog_view()
 
 
+
+def _analyze_clip(path: str, cfg: Config) -> dict:
+    """Deep-analyze one clip on demand (light path: no CLAP/vocal)."""
+    from musictrain.audio.analysis import beat_grid, detect_structure, extract_chords, onset_stats
+    from musictrain.audio.features import load_audio
+
+    cache = st.session_state.setdefault("viz_analysis", {})
+    if path in cache:
+        return cache[path]
+    rec: dict = {}
+    try:
+        with st.spinner("Analyzing clip (chords, beat grid, structure)..."):
+            y, sr = load_audio(Path(path), sr=cfg.analysis.sr)
+            rec = {
+                "chords": extract_chords(y, sr, hop_length=cfg.analysis.hop_length,
+                                         frame_seconds=cfg.analysis.chord_frame),
+                "beat_grid": beat_grid(y, sr, hop_length=cfg.analysis.hop_length,
+                                       beats_per_bar=cfg.analysis.beats_per_bar),
+                "onsets": onset_stats(y, sr, hop_length=cfg.analysis.hop_length),
+                "structure": detect_structure(
+                    y, sr, hop_length=cfg.analysis.hop_length,
+                    min_segments=cfg.analysis.structure_min_segments,
+                    max_segments=cfg.analysis.structure_max_segments,
+                    segment_seconds=cfg.analysis.structure_segment_seconds,
+                ),
+            }
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"analysis failed: {exc}")
+    cache[path] = rec
+    return rec
+
+
+def page_visualize() -> None:
+    """Batch 1 - previews & audio: waveforms, spectrograms, chords, structure, stems."""
+    from musictrain import viz
+
+    _page_header("🎬", "Visualize",
+                 "Waveforms, spectrograms, chords, beat grids, structure and stem mixing.")
+    cfg = load_cfg()
+    files = viz.scan_audio(ROOT, ["data/clean", "data/raw", "data/segments", "outputs"])
+    if not files:
+        st.info("No audio found under data/ or outputs/. Generate or normalize some clips first.")
+        return
+
+    names = {str(p): f"{p.relative_to(ROOT)}" for p in files}
+    sel = st.selectbox("Clip", list(names), format_func=lambda k: names[k], key="viz_clip")
+
+    t_wave, t_spect, t_music, t_struct, t_stems = st.tabs(
+        ["🌊 Waveform", "🔬 Spectrogram", "🎼 Beat & chords", "🧩 Structure", "🎚️ Stems"])
+
+    with t_wave:
+        viz.waveform(sel, "page")
+        rec = _analyze_clip(sel, cfg)
+        viz.onset_overlay(sel, rec.get("beat_grid", {}), rec.get("onsets", {}), "page")
+    with t_spect:
+        kind = st.radio("Kind", ["mel", "chroma"], horizontal=True, key="viz_kind")
+        viz.spectrogram(sel, "page", kind=kind)
+    with t_music:
+        rec = _analyze_clip(sel, cfg)
+        viz.chord_beat_strip(rec.get("chords", []), rec.get("beat_grid", {}), "page")
+        viz.chromagram(sel, "page")
+    with t_struct:
+        rec = _analyze_clip(sel, cfg)
+        viz.structure_timeline(sel, rec.get("structure", {}).get("segments", []), "page")
+    with t_stems:
+        stem_files = viz.scan_audio(ROOT, ["data/stems"])
+        viz.stem_mixer(stem_files, "page")
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("Before / after")
+        clean = viz.scan_audio(ROOT, ["data/clean"])
+        raw = viz.scan_audio(ROOT, ["data/raw"])
+        if clean and raw:
+            viz.before_after(str(raw[0]), str(clean[0]), "page")
+        else:
+            st.caption("run normalize to compare raw vs clean")
+    with c2:
+        st.subheader("Live generation")
+        viz.live_generation_view(str(ROOT / "outputs"), "page")
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
@@ -2229,6 +2312,7 @@ PAGES = {
     "🎛️ Generate": page_generate,
     "🪄 Prompt builder": page_promptbuilder,
     "📏 Check BPM": page_check,
+    "🎬 Visualize": page_visualize,
     "🏷️ Labels": page_labels,
     "📊 Compare": page_compare,
     "🧹 Hygiene": page_hygiene,

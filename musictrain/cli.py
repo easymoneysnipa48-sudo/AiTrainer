@@ -165,6 +165,31 @@ def cmd_finetune(args) -> int:
     return 0 if result else 1
 
 
+def cmd_tuning(args) -> int:
+    from .tuning import run
+
+    cfg = _build_config(args)
+    tokens = args.tokens if getattr(args, "tokens", None) else []
+    result = run(
+        cfg.project_root, cfg, args.task,
+        adapters_dir=Path(args.adapters) if args.adapters else None,
+        metric=args.metric,
+        n_trials=args.trials,
+        seed=args.seed,
+        model_name=args.model,
+        bits=args.bits,
+        tokens=tokens,
+        concept=args.concept or "",
+        examples=[Path(p) for p in (args.examples or [])],
+        model_bytes=args.model_bytes or 0,
+        vram_bytes=args.vram_bytes or 0,
+        dtype=args.dtype or "fp32",
+    )
+    if result.get("error"):
+        return 1
+    return 0
+
+
 def cmd_merge(args) -> int:
     from .merge import merge
 
@@ -1363,6 +1388,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cfg-base", type=float, default=3.0, help="Base guidance scale for sweep (#28)")
     sp.add_argument("--cfg-sweep", type=int, default=0, help="Number of CFG candidates to log (#28)")
     sp.set_defaults(func=cmd_finetune)
+
+    # tuning (gap #1-#7)
+    sp = sub.add_parser(
+        "tuning",
+        help="Training helpers: resume, HPO, MLX, quantization, tokenizer, inversion, grad-accum plan",
+    )
+    add_common(sp)
+    sp.add_argument("--task", required=True,
+                    choices=["resume", "hpo", "mlx", "quantize", "tokens", "inversion", "plan"],
+                    help="Which tuning helper to run")
+    sp.add_argument("--adapters", default=None, help="Adapters dir for resume")
+    sp.add_argument("--metric", default="leaderboard_score", help="HPO objective metric")
+    sp.add_argument("--trials", type=int, default=10, help="HPO trial count")
+    sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--model", default=None, help="Model name for quantize")
+    sp.add_argument("--bits", type=int, default=8, choices=[4, 8], help="Quantization bits")
+    sp.add_argument("--tokens", nargs="*", default=None, help="Custom style tokens to register")
+    sp.add_argument("--concept", default=None, help="Concept for textual inversion")
+    sp.add_argument("--examples", nargs="*", default=None, help="Example audio for inversion")
+    sp.add_argument("--model-bytes", type=int, default=0, help="Model size for grad-accum plan")
+    sp.add_argument("--vram-bytes", type=int, default=0, help="VRAM budget for grad-accum plan")
+    sp.add_argument("--dtype", default="fp32", choices=["fp32", "fp16", "bf16"])
+    sp.set_defaults(func=cmd_tuning)
 
     # merge (advanced #13)
     sp = sub.add_parser(

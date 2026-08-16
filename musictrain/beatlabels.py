@@ -46,7 +46,11 @@ def _norm(s: str) -> str:
 
 
 def _vibe(song_stem: str) -> Dict[str, str]:
-    """Genre/mood/instruments heuristic from the beat's filename."""
+    """Genre/mood/instruments heuristic from the beat's filename.
+
+    Only emits terms present in ``labels.VOCAB`` so the generated CSV always
+    passes ``musictrain labels --check`` (enforced in CI smoke).
+    """
     low = song_stem.lower()
     if "thug" in low or "aggress" in low or "hard" in low:
         return {
@@ -55,16 +59,19 @@ def _vibe(song_stem: str) -> Dict[str, str]:
         }
     if "soul" in low or "talk" in low:
         return {
-            "genre": "melodic trap", "mood": "emotional|melodic",
+            "genre": "melodic trap", "mood": "emotional|reflective",
             "instruments": "piano|808 bass|strings",
         }
     if "feel" in low or "kodak" in low:
         return {
-            "genre": "melodic trap", "mood": "melodic|reflective",
-            "instruments": "808 bass|bell|trap hi-hats",
+            "genre": "melodic trap", "mood": "emotional|reflective",
+            "instruments": "808 bass|bells|trap hi-hats",
         }
     if "click" in low:
-        return {"genre": "test", "mood": "neutral", "instruments": "click"}
+        return {
+            "genre": "trap", "mood": "dark",
+            "instruments": "kick|percussion",
+        }
     return {
         "genre": "trap", "mood": "dark|atmospheric",
         "instruments": "808 bass|trap hi-hats",

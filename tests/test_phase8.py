@@ -130,7 +130,7 @@ def test_merge_averages_weights(tmp_path):
     m1.mkdir()
     m2.mkdir()
     # legacy torch .bin format for the dummy test
-    import torch
+    torch = pytest.importorskip("torch")
 
     torch.save({"w": torch.tensor([1.0, 3.0])}, m1 / "pytorch_model.bin")
     torch.save({"w": torch.tensor([3.0, 5.0])}, m2 / "pytorch_model.bin")

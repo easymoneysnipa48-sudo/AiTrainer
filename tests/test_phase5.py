@@ -32,7 +32,7 @@ class _FakeInputs(dict):
 
 
 def _fake_model():
-    import torch
+    torch = pytest.importorskip("torch")
 
     m = types.SimpleNamespace()
     m.config = types.SimpleNamespace(
@@ -49,7 +49,7 @@ def _fake_model():
 
 
 def _fake_processor():
-    import torch
+    torch = pytest.importorskip("torch")
 
     class P:
         def __call__(self, text, padding=True, return_tensors="pt"):

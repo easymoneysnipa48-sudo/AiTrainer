@@ -191,12 +191,6 @@ def train(
     cfg_sweep: int = 0,
 ) -> dict:
     """LoRA-train the decoder on (audio, description) pairs, save adapters."""
-    try:
-        import torch
-    except Exception as exc:  # noqa: BLE001
-        console.error(f"torch unavailable: {exc}")
-        return {}
-
     pairs = _pairs(cfg.project_root, limit=limit)
     if not pairs:
         console.error(
@@ -212,6 +206,12 @@ def train(
     if steps <= 0:
         console.ok(f"Dry run: data prepared, LoRA would train on {len(pairs)} pair(s)")
         return {"dry_run": True, "n_pairs": len(pairs), "steps": 0}
+
+    try:
+        import torch
+    except Exception as exc:  # noqa: BLE001
+        console.error(f"torch unavailable: {exc}")
+        return {}
 
     try:
         import peft  # noqa: F401

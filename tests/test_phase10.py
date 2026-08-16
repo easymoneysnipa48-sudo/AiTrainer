@@ -53,7 +53,7 @@ def test_diff_weights_reports_deltas(tmp_path):
     b = tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    import torch
+    torch = pytest.importorskip("torch")
 
     torch.save({"w": torch.tensor([1.0, 1.0])}, a / "pytorch_model.bin")
     torch.save({"w": torch.tensor([1.0, 5.0])}, b / "pytorch_model.bin")
@@ -64,6 +64,7 @@ def test_diff_weights_reports_deltas(tmp_path):
 
 
 def test_diff_weights_no_shared(tmp_path):
+    pytest.importorskip("safetensors")
     from musictrain.registry import diff_weights
 
     a = tmp_path / "a"

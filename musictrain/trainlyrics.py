@@ -140,20 +140,21 @@ def train(
     accum: int = 4,
     warmup: int = 10,
     max_len: int = 1024,
+    limit: int = 0,
     dry_run: bool = False,
 ) -> Dict[str, object]:
     """Fine-tune the base model with LoRA on the instruction dataset."""
     root = Path(root)
     train_path = root / "metadata" / "lyrics_train_instructions.jsonl"
     val_path = root / "metadata" / "lyrics_val_instructions.jsonl"
-    train_ex = _load_examples(train_path)
-    val_ex = _load_examples(val_path) if val_path.exists() else []
+    train_ex = _load_examples(train_path)[:limit] if limit else _load_examples(train_path)
+    val_ex = (_load_examples(val_path) if val_path.exists() else [])[: max(limit // 10, 1)] if limit else (_load_examples(val_path) if val_path.exists() else [])
     device = resolve_device()
     run = run_dir(Path(out) if not Path(out).is_absolute() else Path(out), tag=model.split("/")[-1].lower())
     plan = {
         "model": model, "device": device, "steps": steps, "lr": lr,
         "lora_r": r, "train_examples": len(train_ex), "val_examples": len(val_ex),
-        "run_dir": str(run),
+        "limit": limit, "run_dir": str(run),
     }
     if dry_run or not train_ex:
         console.info("DRY RUN — no model loaded:")
@@ -198,7 +199,7 @@ def train(
         logging_steps=max(1, steps // 20),
         save_strategy="no",
         eval_strategy="steps" if val_ds else "no",
-        eval_steps=max(1, steps // 4) if val_ds else None,
+        eval_steps=max(1, steps) if val_ds else None,  # one final eval keeps runtimes bounded
         report_to=[],
         remove_unused_columns=False,
         seed=seed,

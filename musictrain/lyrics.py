@@ -804,8 +804,9 @@ def _llm_prompt(ctx: BeatContext, artist: Artist) -> str:
         f"Mood: {ctx.mood}. Topic: {ctx.topic}.\n"
         f"Signature ad-libs: {', '.join(artist.ad_libs) or 'none'}.\n"
         f"Slang: {', '.join(artist.slang) or 'none'}.\n"
-        f"Write original lyrics ONLY (no explanations). Format each section as:\n"
-        f"[SECTION] (one of intro/verse/hook/chorus/bridge/outro) followed by its lines.\n"
+        f"Write original lyrics ONLY, in English. Never translate, explain, or comment.\n"
+        f"Start each section with exactly [intro]/[verse]/[hook]/[chorus]/[bridge]/[outro]\n"
+        f"and put that section's lines below the header.\n"
         f"Match the {artist.cadence} cadence and {artist.rhyme_scheme} rhyme scheme.\n"
         + (f"Feature sections: {features}.\n" if features else "")
         + (f"Avoid these words: {', '.join(ctx.negative)}.\n" if ctx.negative else "")
@@ -815,33 +816,54 @@ def _llm_prompt(ctx: BeatContext, artist: Artist) -> str:
 def _parse_llm(text: str, ctx: BeatContext) -> Optional[LyricsResult]:
     import re
 
+    # matches "[intro]", "intro:", "intro", "verse 2" — bare section headers
+    # that local instruct models emit without the brackets
+    role_re = re.compile(r"^\[?([A-Za-z-]+)(?:\s+\d+)?\]?:?\s*(.*)$")
+    roles = {"intro", "verse", "hook", "chorus", "bridge", "outro", "pre-chorus"}
+
+    def _cjk_ratio(s: str) -> float:
+        if not s:
+            return 0.0
+        return sum(0x4E00 <= ord(ch) <= 0x9FFF for ch in s) / len(s)
+
     sections: List[dict] = []
     current: Optional[dict] = None
+    plain_lines: List[str] = []  # header-less lyrics (fallback section)
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        m = re.match(r"^\[([A-Za-z -]+)\]", line)
-        if m:
-            role = m.group(1).strip().lower()
-            if role == "section":
-                # "[SECTION]" header only — skip, wait for the real one
-                continue
-            if current is not None:
-                sections.append(current)
-            current = {"role": role, "bars": len(current["lines"]) if current else 0,
-                       "lines": [], "ad_libs": [], "flow": "melodic", "cadence": "medium"}
-            # the header line may also carry the first lyric after a space
-            rest = line[m.end():].strip()
-            if rest:
-                current["lines"].append(rest)
+        # skip multilingual-model notes/translations (e.g. Qwen "可以理解为")
+        if _cjk_ratio(line) > 0.2 or "理解为" in line or "翻译" in line:
             continue
+        plain_lines.append(line)
+        m = role_re.match(line)
+        if m:
+            role = m.group(1).lower()
+            if role in roles:
+                if current is not None:
+                    sections.append(current)
+                current = {"role": role, "bars": 0,
+                           "lines": [], "ad_libs": [], "flow": "melodic", "cadence": "medium"}
+                rest = m.group(2).strip()
+                if rest:
+                    current["lines"].append(rest)
+                continue
+            if role == "section":  # "[SECTION]" placeholder header — skip
+                continue
         if current is not None:
             current["lines"].append(line)
     if current is not None:
         sections.append(current)
     if not sections:
-        return None
+        # header-less output still counts — a local model that ignores the
+        # format instruction shouldn't silently fall back to the template
+        if len(plain_lines) >= 2:
+            sections = [{"role": "verse", "bars": len(plain_lines),
+                         "lines": plain_lines, "ad_libs": [],
+                         "flow": "melodic", "cadence": "medium"}]
+        else:
+            return None
     for s in sections:
         s["bars"] = len(s["lines"])
     return LyricsResult(
@@ -873,7 +895,12 @@ def _generate_local(ctx: BeatContext, artist: Artist, path: str) -> Optional[Lyr
     key = str(path)
     try:
         if key not in _local_model_cache:
-            p = Path(path)
+            # resolve to an absolute path — huggingface_hub rejects relative
+            # repo-style paths like "checkpoints/lyrics/<run>"
+            p = Path(path).resolve()
+            if not p.exists() or not p.is_dir():
+                log.warning("local model path not found, falling back to offline: %s", path)
+                return None
             meta: Dict[str, str] = {}
             meta_path = p / "metadata.json"
             if meta_path.exists():
@@ -901,18 +928,24 @@ def _generate_local(ctx: BeatContext, artist: Artist, path: str) -> Optional[Lyr
         ]
         prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         ids = tok(prompt, return_tensors="pt").to(device)
-        torch.manual_seed(ctx.seed)
-        with torch.no_grad():
-            out = model.generate(
-                **ids,
-                max_new_tokens=700,
-                do_sample=True,
-                temperature=0.9,
-                top_p=0.95,
-                pad_token_id=tok.pad_token_id,
-            )
-        text = tok.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
-        result = _parse_llm(text, ctx)
+        result: Optional[LyricsResult] = None
+        # sampling is stochastic and a lightly-trained model occasionally drifts
+        # (e.g. multilingual mode) — retry once on a different seed before giving up
+        for attempt_seed in (ctx.seed, ctx.seed + 1):
+            torch.manual_seed(attempt_seed)
+            with torch.no_grad():
+                out = model.generate(
+                    **ids,
+                    max_new_tokens=700,
+                    do_sample=True,
+                    temperature=0.9,
+                    top_p=0.95,
+                    pad_token_id=tok.pad_token_id,
+                )
+            text = tok.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
+            result = _parse_llm(text, ctx)
+            if result is not None:
+                break
         if result is not None:
             result.backend = "local"
         return result

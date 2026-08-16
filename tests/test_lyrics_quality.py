@@ -90,6 +90,33 @@ def test_local_model_env_falls_back_to_offline(monkeypatch):
     assert r.sections and r.sections[0]["lines"]
 
 
+def test_llm_parser_accepts_bare_and_bracketed_headers():
+    ctx = lyrics.BeatContext(artist="drake", seed=7)
+    text = "intro\ni was lost in my own thoughts\n[verse 1]\nmy life is all about money\nhook: i can't slow down\noutro\nwe made it out"
+    r = lyrics._parse_llm(text, ctx)
+    assert r is not None
+    assert [s["role"] for s in r.sections] == ["intro", "verse", "hook", "outro"]
+    assert r.sections[1]["lines"] == ["my life is all about money"]
+
+
+def test_llm_parser_skips_cjk_junk_and_uses_headerless_fallback():
+    ctx = lyrics.BeatContext(artist="drake", seed=7)
+    text = (
+        "yeah, woo可以理解为 yeah\n"
+        "line one\nline two\nline three\n"
+        "the 6 可以理解为 the six\n"
+    )
+    r = lyrics._parse_llm(text, ctx)
+    assert r is not None
+    assert r.sections[0]["role"] == "verse"
+    assert r.sections[0]["lines"] == ["line one", "line two", "line three"]
+
+
+def test_llm_parser_returns_none_for_junk_only():
+    ctx = lyrics.BeatContext(artist="drake", seed=7)
+    assert lyrics._parse_llm("完全随机的非歌词内容", ctx) is None
+
+
 # --------------------------------------------------------------------------- #
 # Expanded content library
 # --------------------------------------------------------------------------- #

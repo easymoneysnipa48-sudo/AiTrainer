@@ -230,7 +230,7 @@ def cmd_train_lyrics(args) -> int:
         cfg.project_root, model=args.model, steps=args.steps, lr=args.lr,
         r=args.r, out=args.out, seed=args.seed, per_device=args.batch,
         accum=args.accum, warmup=args.warmup, max_len=args.max_len,
-        dry_run=args.dry_run,
+        limit=args.limit, dry_run=args.dry_run,
     )
     return 0 if result else 1
 
@@ -2107,6 +2107,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--accum", type=int, default=4, help="Gradient accumulation steps")
     sp.add_argument("--warmup", type=int, default=10, help="LR warmup steps")
     sp.add_argument("--max-len", type=int, default=1024, help="Max tokens per example")
+    sp.add_argument("--limit", type=int, default=0, help="Cap train examples (and ~1/10th of val) to keep RAM bounded")
     sp.add_argument("--dry-run", action="store_true", help="Validate dataset + print plan without loading a model")
     sp.set_defaults(func=cmd_train_lyrics)
 

@@ -537,6 +537,7 @@ def train(
 
     out_dir = Path(out_dir) if out_dir else cfg.project_root / "adapters"
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = out_dir.resolve()  # ensure absolute so relative_to(cfg.project_root) works
     if full:
         torch.save(model.decoder.state_dict(), out_dir / "decoder_state.pt")
         console.ok(f"Full decoder weights -> {out_dir.relative_to(cfg.project_root)}")

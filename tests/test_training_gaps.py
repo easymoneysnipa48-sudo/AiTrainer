@@ -60,7 +60,7 @@ def _tiny_optimizer():
 
 
 def test_checkpoint_roundtrip(tmp_path):
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     opt = _tiny_optimizer()
     ckpt = tmp_path / "ckpt"
     ft._save_checkpoint(ckpt, opt, opt_step=7, step=3, losses=[1.0, 2.0],
@@ -77,8 +77,8 @@ def test_checkpoint_roundtrip(tmp_path):
 
 
 def test_checkpoint_load_missing_dir_returns_zeros(tmp_path):
-    opt = _tiny_optimizer()
-    st = ft._load_checkpoint_state(tmp_path / "nope", opt, [], False)
+    # the missing-dir path returns before touching the optimizer, so no torch needed
+    st = ft._load_checkpoint_state(tmp_path / "nope", None, [], False)
     assert st == {"opt_step": 0, "step": 0, "losses": [], "val_losses": []}
 
 

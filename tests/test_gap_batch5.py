@@ -70,6 +70,7 @@ def test_device_chain_ends_in_cpu():
 
 
 def test_resolve_device_falls_back_to_cpu():
+    pytest.importorskip("torch")  # resolve_device probes torch device availability
     from musictrain.inference import resolve_device
 
     # "bogus" is never available -> must land on cpu (never crash)

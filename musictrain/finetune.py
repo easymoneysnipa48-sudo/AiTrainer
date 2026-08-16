@@ -242,12 +242,11 @@ def _save_checkpoint(out_dir: Path, optim, opt_step: int, step: int,
 
 def _load_checkpoint_state(resume_dir: Path, optim, ema_params: List, ema: bool) -> dict:
     """Restore optimizer/scheduler state + counters from a prior run (#3)."""
-    import torch
-
     resume_dir = Path(resume_dir)
     pt = resume_dir / "trainer_state.pt"
     if not pt.exists():
         return {"opt_step": 0, "step": 0, "losses": [], "val_losses": []}
+    import torch
     try:
         state = torch.load(pt, map_location="cpu")
         optim.load_state_dict(state.get("optimizer", {}))

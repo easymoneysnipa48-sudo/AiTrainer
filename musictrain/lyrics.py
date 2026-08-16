@@ -129,47 +129,52 @@ def beat_context_from_analysis(
 # Rhyme banks — grouped end-words so blocks actually rhyme.
 # --------------------------------------------------------------------------- #
 _RHYME_BANKS: Dict[str, List[str]] = {
-    "ain": ["pain", "rain", "chain", "main", "brain", "vain", "campaign", "remain",
-            "champagne", "sustain", "attain", "explain", "domain"],
-    "ight": ["night", "fight", "light", "right", "sight", "flight", "bright", "tight", "hype",
-             "tonight", "alright", "polite", "spotlight", "hindsight"],
-    "old": ["gold", "cold", "told", "bold", "hold", "sold", "control", "roll",
-            "unfold", "behold", "retold", "tenfold"],
-    "ow": ["now", "how", "wow", "pow", "allow", "somehow", "vow", "endow"],
-    "ay": ["away", "today", "pay", "stay", "play", "betray", "grey", "sway",
-           "convey", "essay", "delay", "replay"],
-    "ive": ["alive", "survive", "drive", "thrive", "arrive", "deprive", "revive",
-            "contrive", "derive", "stay alive"],
-    "eep": ["deep", "keep", "sleep", "weep", "leap", "creep", "reap"],
-    "all": ["all", "fall", "call", "ball", "wall", "tall", "stall", "haul",
-            "withdraw", "appall", "overall"],
-    "end": ["end", "send", "bend", "friend", "spend", "trend", "defend", "ascend",
-            "pretend", "comprehend", "recommend", "amend"],
-    "ame": ["name", "fame", "game", "flame", "shame", "claim", "blame",
-            "insane", "came", "tame", "frame", "acclaim"],
-    "ack": ["back", "track", "stack", "black", "attack", "rack", "lack", "facts",
-            "exact", "impact", "heart attack", "comeback"],
-    "eel": ["real", "feel", "steel", "deal", "heal", "seal", "reveal",
-            "appeal", "conceal", "unreal"],
-    "ice": ["ice", "price", "twice", "sacrifice", "device", "advice", "slice", "rise",
-            "paradise", "precise", "suffice", "entice"],
-    "oad": ["road", "load", "code", "mode", "explode", "abode", "gold"],
-    "oney": ["money", "funny", "honey", "sunny", "running", "coming"],
-    "ock": ["block", "lock", "rock", "stock", "clock", "shock", "knock"],
-    "ide": ["ride", "slide", "hide", "inside", "pride", "tide", "divide",
-            "collide", "confide", "decide", "provide", "suicide"],
-    "ure": ["pure", "sure", "secure", "cure", "endure", "for sure", "mature"],
-    "ace": ["face", "race", "place", "chase", "embrace", "replace", "grace", "space",
-            "disgrace", "erase", "maze", "days"],
-    "eam": ["dream", "scheme", "team", "cream", "extreme", "beam", "redeem",
-            "self-esteem", "supreme", "gleam"],
+    # Curated to noun-safe words only: every {R} slot in a template is a noun
+    # position ("the {R}", "my {R}", "through the {R}"), so verbs/adverbs like
+    # "endow", "told", "secure" produced gibberish ("Countin' up the told").
+    "ain": ["pain", "rain", "chain", "main", "brain", "campaign", "champagne", "domain",
+            "stain", "lane", "train", "grain", "terrain", "refrain"],
+    "ight": ["night", "fight", "light", "right", "sight", "flight", "hype", "spotlight",
+             "hindsight", "might", "height", "bite", "kite"],
+    "old": ["gold", "cold", "hold", "control", "roll", "mold", "toll", "stroll", "fold"],
+    "ow": ["now", "vow", "clout", "shout", "doubt", "count", "amount", "route", "drought",
+           "crowd", "bout"],
+    "ay": ["way", "day", "pay", "stay", "play", "sway", "essay", "delay", "replay",
+           "ray", "tray", "spray", "clay", "display"],
+    "ive": ["drive", "hive", "jive", "five", "dive"],
+    "eep": ["deep", "keep", "sleep", "leap", "creep", "jeep", "sheep", "sweep", "beep"],
+    "all": ["fall", "call", "ball", "wall", "stall", "haul", "hall", "mall", "crawl",
+            "brawl", "sprawl", "recall"],
+    "end": ["end", "bend", "friend", "trend", "blend", "weekend", "girlfriend", "boyfriend"],
+    "ame": ["name", "fame", "game", "flame", "shame", "claim", "blame", "frame",
+            "acclaim", "dame"],
+    "ack": ["back", "track", "stack", "black", "attack", "rack", "lack", "facts", "impact",
+            "comeback", "crack", "snack", "sack", "pack", "jack", "slack", "tack"],
+    "eel": ["feel", "steel", "deal", "seal", "reveal", "appeal", "wheel", "peel", "heel",
+            "meal", "spiel", "steal"],
+    "ice": ["ice", "price", "sacrifice", "device", "advice", "slice", "rise", "paradise",
+            "mice", "dice", "vice", "spice"],
+    "oad": ["road", "load", "code", "mode", "abode", "ode", "node", "goad", "episode",
+            "download", "upload"],
+    "oney": ["money", "honey", "bunny", "phony"],
+    "ock": ["block", "lock", "rock", "stock", "clock", "shock", "knock", "dock", "flock",
+            "sock"],
+    "ide": ["ride", "slide", "hide", "inside", "pride", "tide", "divide", "suicide",
+            "guide", "side", "bride", "glide", "stride"],
+    "ure": ["future", "feature", "culture", "nature", "creature", "vulture", "picture",
+            "capture", "rapture", "gesture", "fracture", "manicure", "tenure", "cure"],
+    "ace": ["face", "race", "place", "chase", "embrace", "grace", "space", "disgrace",
+            "maze", "days"],
+    "eam": ["dream", "scheme", "team", "cream", "extreme", "beam", "self-esteem", "gleam"],
     # multi-syllable / slant banks (feature #4)
     "ation": ["situation", "motivation", "salvation", "elevation", "celebration", "dedication",
-              "destination", "generation"],
-    "able": ["stable", "able", "table", "label", "fatal", "unstable", "capable", "unbreakable"],
-    "ust": ["trust", "must", "bust", "dust", "crust", "adjust", "disgust", "robust"],
-    "eatin": ["eatin'", "cheatin'", "leavin'", "believin'", "achievin'", "grievin'", "breathin'"],
-    "ition": ["condition", "position", "ambition", "tradition", "addition", "mission", "vision"],
+              "destination", "generation", "foundation", "education", "reputation"],
+    "able": ["stable", "table", "label", "cable", "fable", "sable", "gable"],
+    "ust": ["trust", "must", "bust", "dust", "crust", "disgust", "lust", "rust", "thrust",
+            "gust"],
+    "in": ["villain", "captain", "mountain", "fountain", "satin", "cousin", "ribbon"],
+    "ition": ["condition", "position", "ambition", "tradition", "addition", "mission",
+              "vision", "edition", "decision", "revision"],
 }
 
 _LINE_TEMPLATES: List[str] = [
@@ -179,39 +184,44 @@ _LINE_TEMPLATES: List[str] = [
     "I could never fold, I stay solid through the {R}",
     "Late nights, chasin' every single {R} I could gain",
     "They was doubtin' me, now they all remember the {R}",
-    "I put my heart in this, now it's flowin' through my {R}",
+    "I put my heart in this, now it's part of the {R}",
     "Countin' up the {R} while they sleepin' on the {R}",
     "I stay loyal to the {R}, never switch for the {R}",
     "Lost some real ones, still I carry all the {R}",
     "I was down bad, had to grind up out the {R}",
     "Now I'm up, and they can't even see the {R}",
     "Talkin' to the {R}, prayin' that I make it through the {R}",
-    "Every scar is a lesson, every {R} is a {R}",
+    "Every scar is a lesson, I carry the {R}",
     "I ain't stressin' over {R}, I been through worse than the {R}",
     "Whole city on my back, and I'm carryin' the {R}",
     "They gon' talk, but they never walked a mile in my {R}",
     "I was built for the {R}, I don't know how to quit",
-    "Pain in my chest but I still gotta {R}",
+    "Pain in my chest but I still chase the {R}",
     "They left me for dead, now they see me in the {R}",
     "I turned my {R} into a blessing, that's the {R}",
     "No handouts, I took the {R} and I ran with the {R}",
     "Realer than most, I don't fake it for the {R}",
     "Money comin' in, but the {R} still the same",
-    "I can't sleep, I keep seein' {R} in my {R}",
-    "If you ain't family, you ain't ridin' on the {R}",
+    "I can't sleep, I keep dreamin' of the {R}",
+    "If you ain't family, you ain't part of the {R}",
     "I remember nights with nothin' but the {R}",
-    "Now it's all {R}, everything I touch is {R}",
-    "Keep your circle small, 'cause the {R} get you {R}",
+    "Now it's all {R}, made it through the {R}",
+    "Keep your circle small, watch who get the {R}",
     "I'ma make it out, I swear it on the {R}",
     # simile / imagery lines (feature #2)
     "I'm in the {R} like a king with no throne",
-    "Cold as the {R} when the winter wind blow",
+    "Cold as the winter, I been through the {R}",
     "Shinin' through the {R} like a light in the dark",
     "Ridin' on the {R} like it's my last ride",
     "Deep as the {R}, I can't even find the bottom",
-    "Float over the {R} like a ghost in the night",
+    "Float like a ghost, movin' through the {R}",
     "Hard as the {R}, but I still keep my soft side",
     "Lost in the {R} like a ship with no shore",
+    # stronger anchors
+    "They want the old me, but the {R} made me new",
+    "I done seen it all, from the bottom to the {R}",
+    "Can't knock the hustle, I was born for the {R}",
+    "They sleep on the {R}, I been awake through the {R}",
 ]
 
 # Approximate syllable count per template (with a one-syllable placeholder for
@@ -320,11 +330,28 @@ def _pick_rhyme_bank(rng: random.Random) -> str:
     return rng.choice(list(_RHYME_BANKS.keys()))
 
 
-def _pick_template_near(target: int, rng: random.Random, spread: int = 2) -> str:
-    """Sample a line template whose syllable count is close to the budget."""
+def _pick_template_near(
+    target: int,
+    rng: random.Random,
+    spread: int = 2,
+    recent: Optional[List[str]] = None,
+) -> str:
+    """Sample a line template whose syllable count is close to the budget.
+
+    ``recent`` holds templates already used in the last few bars so the same
+    line shape isn't picked back-to-back ("I turned my {R} into a blessing"
+    three times in a row was a real output bug).
+    """
+    used = set(recent or [])
     candidates = [
-        t for t, s in zip(_LINE_TEMPLATES, _TEMPLATE_SYLLABLES) if abs(s - target) <= spread
+        t for t, s in zip(_LINE_TEMPLATES, _TEMPLATE_SYLLABLES)
+        if abs(s - target) <= spread and t not in used
     ]
+    if not candidates:
+        candidates = [
+            t for t, s in zip(_LINE_TEMPLATES, _TEMPLATE_SYLLABLES)
+            if abs(s - target) <= spread
+        ]
     if not candidates:
         candidates = _LINE_TEMPLATES
     return rng.choice(candidates)
@@ -359,12 +386,57 @@ def _topic_leads(topic: str, mood: str, rng: random.Random) -> List[str]:
     return leads
 
 
+# Nouns for the topic-anchor lines — the lead-in {R} is filled with the topic's
+# own words so the opener reads coherently ("This pain inside me runnin' deep"
+# instead of "This endow inside me"). These are anchor lines: their end word is
+# a fixed template word in most cases, so they don't need to rhyme with the
+# following bars.
+_TOPIC_NOUNS: Dict[str, List[str]] = {
+    "pain": ["pain", "hurt", "ache", "tears"],
+    "heartbreak": ["heartbreak", "regret", "memories", "ghosts"],
+    "love": ["love", "heart", "feelings", "affection"],
+    "loyalty": ["loyalty", "code", "respect", "trust"],
+    "struggle": ["struggle", "grind", "hustle", "mud"],
+    "success": ["success", "top", "shine", "victory"],
+    "wealth": ["money", "racks", "bags", "cash"],
+    "loss": ["loss", "pain", "tears", "grief"],
+    "street": ["streets", "block", "game", "war"],
+    "fame": ["fame", "lights", "spotlight", "attention"],
+    "family": ["family", "blood", "kin", "people"],
+    "hustle": ["hustle", "grind", "work", "mission"],
+    "faith": ["faith", "prayers", "light", "grace"],
+    "demons": ["demons", "voices", "ghosts", "shadows"],
+    "anxiety": ["anxiety", "pressure", "noise", "fear"],
+    "confidence": ["confidence", "crown", "word", "throne"],
+    "violence": ["violence", "war", "smoke", "danger"],
+    "ambition": ["ambition", "vision", "dream", "goal"],
+    "doubt": ["doubt", "fear", "noise", "hate"],
+    "envy": ["envy", "hate", "jealousy", "snakes"],
+    "greed": ["greed", "lust", "envy", "snakes"],
+    "money": ["money", "racks", "cash", "bags"],
+}
+
+
+def _topic_fill(topic: str, rng: random.Random) -> List[str]:
+    """Nouns to drop into a topic lead line's {R} slots (coherent openers)."""
+    t = (topic or "").lower()
+    words: List[str] = []
+    for key, nouns in _TOPIC_NOUNS.items():
+        if key in t:
+            words.extend(nouns)
+    if not words:
+        words = ["pain", "grind", "hustle", "rain"]
+    rng.shuffle(words)
+    return words
+
+
 def _generate_section(
     artist: Artist,
     artist2: Optional[Artist],
     ctx: BeatContext,
     spec: SectionSpec,
     rng: random.Random,
+    seen_openers: set,
 ) -> dict:
     role = spec.role
     bars = spec.bars or _BARS_BY_ROLE.get(role, 8)
@@ -416,7 +488,7 @@ def _generate_section(
     rng.shuffle(topic_leads)
 
     n = max(1, int(round(bars)))
-    seen_openers: set = set()
+    recent_templates: List[str] = []
     for i in range(n):
         # duet mode (#5): alternate artists per bar
         who = artist if (artist2 is None or i % 2 == 0) else artist2
@@ -425,16 +497,18 @@ def _generate_section(
         gi = group_usage.get(g, 0)
         group_usage[g] = gi + 1
         rw = words[gi % len(words)]
-        nxt = words[(gi + 1) % len(words)]
+        # skip one so two-slot lines ("the {R} ... the {R}") don't bleed the
+        # next line's end word onto this line's tail ("...the keep" twice)
+        nxt = words[(gi + 2) % len(words)]
         pair = [rw, nxt]
 
         if role in ("hook", "chorus") and i == 0 and topic_leads:
             tmpl = topic_leads[0]
-            lead = _render_line(tmpl, pair)
+            lead = _render_line(tmpl, _topic_fill(topic, rng))
             line = prefix + lead if prefix else lead
         elif i == 0 and topic_leads:
             tmpl = topic_leads[i % len(topic_leads)]
-            line = _render_line(tmpl, pair)
+            line = _render_line(tmpl, _topic_fill(topic, rng))
             if prefix and not line.startswith(prefix):
                 # lowercase the first char to join mid-sentence, but keep the
                 # pronoun "I" capitalized
@@ -443,8 +517,11 @@ def _generate_section(
                 else:
                     line = prefix + line[0].lower() + line[1:]
         else:
-            tmpl = _pick_template_near(target, rng)
+            tmpl = _pick_template_near(target, rng, recent=recent_templates)
             line = _render_line(tmpl, pair)
+            recent_templates.append(tmpl)
+            if len(recent_templates) > 3:
+                recent_templates.pop(0)
 
         # signature opener per rapper (duet-aware)
         if who.name not in seen_openers and who.signature_openers:
@@ -565,6 +642,7 @@ def generate(ctx: BeatContext) -> LyricsResult:
     rng = random.Random(ctx.seed)
     structure = ctx.structure or list(_DEFAULT_STRUCTURE)
     sections = []
+    seen_openers: set = set()  # signature opener once per song, not per section
     for s in structure:
         # multi-artist feature mode (#6): a section can override the artist
         sec_artist = artist
@@ -578,7 +656,7 @@ def generate(ctx: BeatContext) -> LyricsResult:
             a2 = get_artist(s.artist2)
             if a2 is not None:
                 sec_artist2 = a2
-        sections.append(_generate_section(sec_artist, sec_artist2, ctx, s, rng))
+        sections.append(_generate_section(sec_artist, sec_artist2, ctx, s, rng, seen_openers))
 
     # filter negative terms (feature #29): drop banned words from lines
     if ctx.negative:
@@ -622,7 +700,7 @@ def regenerate_section(ctx: BeatContext, role: str, seed: Optional[int] = None) 
         artist = get_artist("future")  # type: ignore[assignment]
     rng = random.Random(seed if seed is not None else ctx.seed)
     spec = SectionSpec(role=role, bars=_BARS_BY_ROLE.get(role, 8))
-    return _generate_section(artist, None, ctx, spec, rng)
+    return _generate_section(artist, None, ctx, spec, rng, set())
 
 
 def restyle(prev: LyricsResult, new_artist: str, seed: Optional[int] = None) -> LyricsResult:

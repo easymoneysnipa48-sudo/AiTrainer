@@ -2912,6 +2912,7 @@ def page_lyrics() -> None:
     style presets, refinement (re-roll / regenerate / restyle), rating + profile."""
     from musictrain import artists as A
     from musictrain import lyrics as L
+    from musictrain import lyrictools as LT
     from musictrain import lyricrating as rating
     from musictrain import lyricsprefs as prefs
 
@@ -2961,6 +2962,33 @@ def page_lyrics() -> None:
     detected_roles = [s.get("role", "verse") for s in segs]
     st.caption("detected structure: " + " → ".join(detected_roles))
 
+    # chord → mood/topic suggestion (feature #8)
+    sug = LT.suggest_from_chords(rec.get("chords", []), key)
+    sc1, sc2, sc3 = st.columns([4, 1, 1])
+    sc1.caption(f"💡 chord suggestion: **{sug['mood']}** / **{sug['topic']}** ({sug['reason']})")
+    if sc2.button("Apply suggestion", key="ly_apply_sug", width="stretch"):
+        st.session_state["ly_sug"] = (sug["mood"], sug["topic"])
+    if st.session_state.get("ly_sug"):
+        if sc3.button("Clear", key="ly_clear_sug", width="stretch"):
+            st.session_state.pop("ly_sug", None)
+            st.rerun()
+
+    # vocal-detection gate (feature #7) — warn if the beat already has vocals
+    vocal = rec.get("vocal") or st.session_state.get("ly_vocal") or {}
+    if vocal.get("verdict") == "vocal":
+        st.warning("🎙️ This beat already contains vocals — you may be writing over a hook.")
+    elif vocal.get("verdict") == "instrumental":
+        st.success("🎹 Instrumental beat — clean space for your lyrics.")
+    elif cfg.clap.enabled:
+        if st.button("🔍 Check for vocals", key="ly_vocal_check"):
+            with st.spinner("Detecting vocals (CLAP)…"):
+                from musictrain.audio.analysis import vocal_instrumental
+
+                v = vocal_instrumental(cfg, beat_path)
+                if v:
+                    st.session_state["ly_vocal"] = v
+                    st.rerun()
+
     # ---------------- style ---------------- #
     st.subheader("🎛️ Style")
     a1, a2, a3, a4 = st.columns(4)
@@ -2987,14 +3015,21 @@ def page_lyrics() -> None:
         mood = g.moods[0]
         topic = g.topics[0]
 
-    # ---------------- structure editor (features #1/#2) ---------------- #
-    with st.expander("🧩 Structure editor & per-section slots", expanded=True):
-        default_arr = ",".join(detected_roles) or "intro,verse,hook,verse,hook,outro"
-        arrangement = st.text_input(
-            "Arrangement (roles, comma-separated)", value=default_arr, key="ly_arrangement",
+    # ---------------- structure editor (features #1/#2/#5/#6) ---------------- #
+    with st.expander("🧩 Structure editor, presets & features", expanded=True):
+        preset = st.selectbox(
+            "📐 Arrangement preset", ["(custom)"] + LT.arrangement_names(), key="ly_preset",
         )
+        if preset != "(custom)":
+            arrangement = ",".join(r for r, _ in LT.ARRANGEMENTS[preset])
+        else:
+            default_arr = ",".join(detected_roles) or "intro,verse,hook,verse,hook,outro"
+            arrangement = st.text_input(
+                "Arrangement (roles, comma-separated)", value=default_arr, key="ly_arrangement",
+            )
         roles = [r.strip().lower() for r in arrangement.split(",") if r.strip()]
         st.caption("roles: intro · verse · hook · chorus · bridge · pre-chorus · outro · full-song")
+
         overrides = st.text_input(
             "Per-section topic slots (role=topic; …)",
             placeholder="verse=pain; hook=success; outro=reflection", key="ly_overrides",
@@ -3004,6 +3039,19 @@ def page_lyrics() -> None:
             if "=" in part:
                 r, t = part.split("=", 1)
                 override_map[r.strip().lower()] = t.strip()
+
+        # multi-artist feature mode (feature #6)
+        features = st.text_input(
+            "Feature artists (role=artist; …)",
+            placeholder="verse=drake; verse=gunna", key="ly_features",
+        )
+        feature_map = {}
+        for part in features.split(";"):
+            if "=" in part:
+                r, a = part.split("=", 1)
+                fa = A.get_artist(a.strip())
+                if fa:
+                    feature_map[r.strip().lower()] = fa.id
 
     # ---------------- weights + negatives (features #28/#29) ---------------- #
     with st.expander("⚖️ Prompt weights & negatives"):
@@ -3023,17 +3071,25 @@ def page_lyrics() -> None:
     negatives += prefs.negatives(ROOT)
 
     artist_id = (A.get_artist(artist) or A.ARTISTS[0]).id
-    ctx = _ly_ctx(rec, artist_id, mood if mood != "(auto)" else "dark",
-                  topic or (g.topics[0] if g else "struggle"), seed, roles, negatives, weights)
-    # apply per-section topic slots (feature #2)
-    if override_map:
+    sug_applied = st.session_state.get("ly_sug")
+    if sug_applied:
+        eff_mood, eff_topic = sug_applied
+    else:
+        eff_mood = mood if mood != "(auto)" else "dark"
+        eff_topic = topic or (g.topics[0] if g else "struggle")
+    ctx = _ly_ctx(rec, artist_id, eff_mood, eff_topic, seed, roles, negatives, weights)
+    # apply per-section topic slots (feature #2) + feature artists (feature #6)
+    if override_map or feature_map:
         ctx.structure = [
-            L.SectionSpec(role=s.role, bars=s.bars,
-                          topic=override_map.get(s.role, ""))
+            L.SectionSpec(
+                role=s.role, bars=s.bars,
+                topic=override_map.get(s.role, ""),
+                artist=feature_map.get(s.role, ""),
+            )
             for s in ctx.structure
         ]
 
-    gcol1, gcol2 = st.columns([3, 1])
+    gcol1, gcol2, gcol3 = st.columns([3, 1, 1])
     if gcol1.button("✍️ Write lyrics", type="primary", key="ly_generate", width="stretch"):
         result = L.generate(ctx)
         st.session_state["ly_result"] = result
@@ -3045,6 +3101,15 @@ def page_lyrics() -> None:
         ctx.seed = seed + int(time.time()) % 97
         st.session_state["ly_result"] = L.generate(ctx)
         st.session_state["ly_ctx"] = ctx
+
+    # style-profile autopilot (feature #10)
+    if gcol3.button("🤖 Auto-write", key="ly_autowrite", width="stretch"):
+        r = prefs.autopilot(ROOT, seed=seed)
+        auto_ctx = _ly_ctx(rec, r.get("artist", artist_id), r.get("mood", "dark"),
+                           r.get("topic", "struggle"), seed, roles, negatives, weights)
+        st.session_state["ly_result"] = L.generate(auto_ctx)
+        st.session_state["ly_ctx"] = auto_ctx
+        st.rerun()
 
     result = st.session_state.get("ly_result")
 
@@ -3083,18 +3148,38 @@ def page_lyrics() -> None:
         return
 
     _ly_arrangement_bar(result.sections)
-    c1, c2 = st.columns([3, 1])
+    c1, c2, c3 = st.columns([3, 1, 1])
     with c1:
         st.caption(f"**{result.artist}** · {result.mood} · {result.topic} · {int(result.bpm)} BPM · {result.key} · seed {result.seed} · backend {result.backend}")
     with c2:
         slug = f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}_{result.mood}_{result.topic}_seed{result.seed}".replace("/", "-")
         st.download_button("⬇ .txt", result.full_text(), file_name=slug + ".txt", mime="text/plain", key="ly_dl")
+    with c3:
+        # studio sheet export (feature #9)
+        st.download_button("⬇ Studio sheet (.md)", result.to_sheet(), file_name=slug + ".md", mime="text/markdown", key="ly_dl_sheet")
 
     for sec in result.sections:
-        with st.expander(f"[{sec['role']}] {sec['bars']} bars · {sec['flow']} @ {sec['cadence']} · {sec['topic'] or result.topic}", expanded=(sec["role"] in ("hook", "chorus"))):
-            st.markdown("\n".join(f"> {ln}" for ln in sec["lines"]))
+        with st.expander(f"[{sec['role']}] {sec['bars']} bars · {sec['flow']} @ {sec['cadence']} · {sec.get('artist', result.artist)}", expanded=(sec["role"] in ("hook", "chorus"))):
+            for ann in LT.annotate_section(sec):
+                st.markdown(f"> {ann['line']}  `{ann['syllables']} syll`")
             if sec["ad_libs"]:
                 st.caption("ad-libs: " + ", ".join(f"({a})" for a in sec["ad_libs"]))
+
+    # ---------------- in-place line editor (feature #3) ---------------- #
+    with st.expander("✏️ Edit lines", expanded=False):
+        edited = st.text_area(
+            "Full text (edit freely)", value=result.full_text(), height=280, key="ly_editor",
+        )
+        e1, e2 = st.columns(2)
+        if e1.button("💾 Save edits", key="ly_editor_save", width="stretch"):
+            st.session_state["ly_edited"] = edited
+            st.success("edits saved — download below")
+        if st.session_state.get("ly_edited"):
+            e2.download_button(
+                "⬇ edited .txt", st.session_state["ly_edited"],
+                file_name=slug + "_edited.txt", mime="text/plain", key="ly_dl_edited",
+                width="stretch",
+            )
 
     # ---------------- rating + style profile (features #49/#50) ---------------- #
     st.markdown("---")

@@ -607,6 +607,15 @@ musictrain lyrics --negative violence --weight topic=2.0 # negatives + weights
 musictrain lyrics --favorite my-preset                  # save a favorite
 musictrain lyrics --history 10 / --diff 1 2             # history + diff
 
+# flow & quality (2nd batch)
+musictrain lyrics --preset hook-first                   # arrangement presets
+musictrain lyrics --feature verse=drake                 # multi-artist feature mode
+musictrain lyrics --annotate                           # per-line syllable + rhyme
+musictrain lyrics --sheet                              # markdown studio sheet
+musictrain lyrics --auto                               # style-profile autopilot
+musictrain lyrics --analysis rec.json --suggest        # chords → mood/topic
+musictrain lyrics --analysis rec.json --vocals         # vocal/instrumental gate
+
 musictrain lyrate --task record --item a --artist future --score 0.8
 musictrain lyrate --task queue --n 10                   # blind A/B queue
 musictrain lyrate --task profile                        # personal style profile

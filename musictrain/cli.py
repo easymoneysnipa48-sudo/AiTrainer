@@ -507,14 +507,18 @@ def cmd_artists(args) -> int:
 
 
 def _lyric_recipe(args, root) -> dict:
-    """Resolve CLI inputs (+ random/favorite) into a canonical recipe dict."""
-    from .lyricsprefs import get_favorite, normalize_recipe, random_recipe
+    """Resolve CLI inputs (+ random/favorite/auto) into a canonical recipe dict."""
+    from .lyricsprefs import autopilot, get_favorite, normalize_recipe, random_recipe
 
     if args.favorite and args.favorite not in ("list",):
         fav = get_favorite(root, args.favorite)
         if fav:
             return dict(fav)
         console.warn(f"favorite {args.favorite!r} not found; building from flags")
+    if args.auto:
+        rec = autopilot(root, seed=args.seed)
+        console.info(f"autopilot: {rec.get('artist')} / {rec.get('mood')} / {rec.get('topic')}")
+        return rec
     if args.random:
         return random_recipe(root, seed=args.seed)
     rec = normalize_recipe(
@@ -538,10 +542,11 @@ def _print_section(sec: dict) -> None:
 def cmd_lyrics(args) -> int:
     import json as _json
 
-    from .lyrics import (BeatContext, beat_context_from_analysis, generate,
-                         regenerate_section, restyle)
+    from .lyrics import (BeatContext, arrangement_specs, beat_context_from_analysis,
+                         generate, regenerate_section, restyle)
     from .lyricsprefs import (add_favorite, favorite_keys, history, history_diff,
                               negatives, record_history, weights)
+    from .lyrictools import ARRANGEMENTS, annotate_section, suggest_from_chords
     from .util import sanitize_slug
 
     cfg = _build_config(args)
@@ -593,6 +598,21 @@ def cmd_lyrics(args) -> int:
         except (OSError, ValueError) as exc:
             console.error(f"Could not read analysis {args.analysis!r}: {exc}")
             return 1
+
+        # chord → mood/topic suggestion (feature #8)
+        if args.suggest:
+            s = suggest_from_chords(
+                analysis.get("chords", []), (analysis.get("key") or {}).get("key", "")
+            )
+            console.info(f"chord→mood suggestion: mood={s['mood']} topic={s['topic']} ({s['reason']})")
+            return 0
+
+        # vocal-detection gate (feature #7)
+        if args.vocals:
+            v = (analysis.get("vocal") or {}).get("verdict", "unknown")
+            console.info(f"vocal verdict: {v}")
+            return 0
+
         ctx = beat_context_from_analysis(analysis, artist=artist, mood=mood, topic=topic, seed=seed)
     else:
         ctx = BeatContext(
@@ -608,6 +628,37 @@ def cmd_lyrics(args) -> int:
         if "=" in w:
             k, v = w.split("=", 1)
             ctx.weights[k.strip()] = float(v)
+
+    # arrangement preset (feature #5)
+    if args.preset:
+        specs = arrangement_specs(args.preset)
+        if not specs:
+            console.error(
+                f"Unknown arrangement {args.preset!r}. Options: {', '.join(ARRANGEMENTS)}"
+            )
+            return 1
+        ctx.structure = specs
+
+    # multi-artist feature mode (feature #6): --feature role=artist
+    if args.feature:
+        from .artists import get_artist
+
+        for f in args.feature:
+            if "=" not in f:
+                console.warn(f"ignoring malformed --feature {f!r} (expected role=artist)")
+                continue
+            role, aid = f.split("=", 1)
+            a = get_artist(aid.strip())
+            if a is None:
+                console.warn(f"unknown feature artist {aid.strip()!r}")
+                continue
+            found = False
+            for s in ctx.structure:
+                if s.role == role.strip().lower():
+                    s.artist = a.id
+                    found = True
+            if not found:
+                console.warn(f"no {role.strip()!r} section in the structure; ignoring feature")
 
     # ---- single-section regeneration (feature #40) ----------------------------
     if args.section:
@@ -657,17 +708,37 @@ def cmd_lyrics(args) -> int:
         console.title(f"--- variant {idx + 1}/{n} (seed={result.seed}, backend={result.backend}) ---")
         print(result.full_text())
 
+        # rhyme + syllable annotations (feature #2)
+        if args.annotate:
+            console.info("--- annotations (syllables per line) ---")
+            for sec in result.sections:
+                console.info(f"[{sec['role']} · target ~{sec.get('syllable_target')} syll · rhyme {sec.get('rhyme')}]")
+                for ann in annotate_section(sec):
+                    print(f"  ({ann['syllables']:2d}) {ann['line']}")
+
+        slug = sanitize_slug(
+            f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}"
+            f"_{result.mood}_{result.topic}_seed{result.seed}"
+        )
+
         # persist + history (features #30/#48)
         if args.out or not args.no_save:
-            slug = sanitize_slug(
-                f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}"
-                f"_{result.mood}_{result.topic}_seed{result.seed}"
-            )
             out_path = (Path(args.out) if args.out and n == 1 else root / "outputs" / "lyrics" / (slug + ".txt"))
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(result.full_text())
             console.ok(f"saved -> {out_path}")
             record_history(root, result.as_dict())
+
+        # studio sheet export (feature #9)
+        if args.sheet is not None:
+            sheet_path = (
+                Path(args.sheet)
+                if args.sheet
+                else root / "outputs" / "lyrics" / (slug + ".md")
+            )
+            sheet_path.parent.mkdir(parents=True, exist_ok=True)
+            sheet_path.write_text(result.to_sheet())
+            console.ok(f"studio sheet -> {sheet_path}")
 
         if args.favorite and args.favorite != "list":
             add_favorite(root, args.favorite, {
@@ -1756,6 +1827,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--section", default=None, help="Regenerate only this section (intro/verse/hook/...)")
     sp.add_argument("--restyle", default=None, help="Re-render the lyrics in another artist's style (id/name/alias)")
     sp.add_argument("--variants", type=int, default=None, help="Generate N seed variants for A/B (re-roll)")
+    sp.add_argument("--preset", default=None, help="Arrangement preset (standard/hook-first/double-verse/16-bar-opener/short-form/long-form)")
+    sp.add_argument("--feature", action="append", default=None, help="Per-section artist override role=artist (repeatable)")
+    sp.add_argument("--auto", action="store_true", help="Style-profile autopilot (auto-pick artist/mood/topic)")
+    sp.add_argument("--annotate", action="store_true", help="Print rhyme + syllable annotations per line")
+    sp.add_argument("--sheet", nargs="?", const="", default=None, help="Export a markdown studio sheet (optional path)")
+    sp.add_argument("--suggest", action="store_true", help="Suggest mood/topic from the beat's chords (needs --analysis)")
+    sp.add_argument("--vocals", action="store_true", help="Report the beat's vocal/instrumental verdict (needs --analysis)")
     sp.add_argument("--random", action="store_true", help="Assemble a surprise-me recipe")
     sp.add_argument("--negative", action="append", default=None, help="Banned word/topic (repeatable)")
     sp.add_argument("--weight", action="append", default=None, help="Prompt weight key=value (repeatable)")

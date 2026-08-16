@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .artists import Artist, get_artist
+from .lyrictools import ARRANGEMENTS, count_syllables, syllable_target
 
 # --------------------------------------------------------------------------- #
 # Beat context
@@ -35,6 +36,7 @@ class SectionSpec:
     topic: str = ""              # per-section override (feature #2)
     mood: str = ""               # per-section override
     flow: str = ""               # per-section flow override
+    artist: str = ""             # per-section artist override (feature mode #6)
 
 
 @dataclass
@@ -119,26 +121,47 @@ def beat_context_from_analysis(
 # Rhyme banks — grouped end-words so blocks actually rhyme.
 # --------------------------------------------------------------------------- #
 _RHYME_BANKS: Dict[str, List[str]] = {
-    "ain": ["pain", "rain", "chain", "main", "brain", "vain", "campaign", "remain"],
-    "ight": ["night", "fight", "light", "right", "sight", "flight", "bright", "tight", "hype"],
-    "old": ["gold", "cold", "told", "bold", "hold", "sold", "control", "roll"],
-    "ow": ["now", "how", "wow", "pow", "allow", "somehow", "vow"],
-    "ay": ["away", "today", "pay", "stay", "play", "betray", "grey", "sway"],
-    "ive": ["alive", "survive", "drive", "thrive", "arrive", "deprive", "revive"],
+    "ain": ["pain", "rain", "chain", "main", "brain", "vain", "campaign", "remain",
+            "champagne", "sustain", "attain", "explain", "domain"],
+    "ight": ["night", "fight", "light", "right", "sight", "flight", "bright", "tight", "hype",
+             "tonight", "alright", "polite", "spotlight", "hindsight"],
+    "old": ["gold", "cold", "told", "bold", "hold", "sold", "control", "roll",
+            "unfold", "behold", "retold", "tenfold"],
+    "ow": ["now", "how", "wow", "pow", "allow", "somehow", "vow", "endow"],
+    "ay": ["away", "today", "pay", "stay", "play", "betray", "grey", "sway",
+           "convey", "essay", "delay", "replay"],
+    "ive": ["alive", "survive", "drive", "thrive", "arrive", "deprive", "revive",
+            "contrive", "derive", "stay alive"],
     "eep": ["deep", "keep", "sleep", "weep", "leap", "creep", "reap"],
-    "all": ["all", "fall", "call", "ball", "wall", "tall", "stall", "haul"],
-    "end": ["end", "send", "bend", "friend", "spend", "trend", "defend", "ascend"],
-    "ame": ["name", "fame", "game", "flame", "shame", "claim", "blame"],
-    "ack": ["back", "track", "stack", "black", "attack", "rack", "lack", "facts"],
-    "eel": ["real", "feel", "steel", "deal", "heal", "seal", "reveal"],
-    "ice": ["ice", "price", "twice", "sacrifice", "device", "advice", "slice", "rise"],
+    "all": ["all", "fall", "call", "ball", "wall", "tall", "stall", "haul",
+            "withdraw", "appall", "overall"],
+    "end": ["end", "send", "bend", "friend", "spend", "trend", "defend", "ascend",
+            "pretend", "comprehend", "recommend", "amend"],
+    "ame": ["name", "fame", "game", "flame", "shame", "claim", "blame",
+            "insane", "came", "tame", "frame", "acclaim"],
+    "ack": ["back", "track", "stack", "black", "attack", "rack", "lack", "facts",
+            "exact", "impact", "heart attack", "comeback"],
+    "eel": ["real", "feel", "steel", "deal", "heal", "seal", "reveal",
+            "appeal", "conceal", "unreal"],
+    "ice": ["ice", "price", "twice", "sacrifice", "device", "advice", "slice", "rise",
+            "paradise", "precise", "suffice", "entice"],
     "oad": ["road", "load", "code", "mode", "explode", "abode", "gold"],
     "oney": ["money", "funny", "honey", "sunny", "running", "coming"],
-    "ock": ["block", "lock", "rock", "stock", "clock", "shock"],
-    "ide": ["ride", "slide", "hide", "inside", "pride", "tide", "divide"],
-    "ure": ["pure", "sure", "secure", "cure", "endure", "for sure"],
-    "ace": ["face", "race", "place", "chase", "embrace", "replace", "grace", "space"],
-    "eam": ["dream", "scheme", "team", "cream", "extreme", "beam", "redeem"],
+    "ock": ["block", "lock", "rock", "stock", "clock", "shock", "knock"],
+    "ide": ["ride", "slide", "hide", "inside", "pride", "tide", "divide",
+            "collide", "confide", "decide", "provide", "suicide"],
+    "ure": ["pure", "sure", "secure", "cure", "endure", "for sure", "mature"],
+    "ace": ["face", "race", "place", "chase", "embrace", "replace", "grace", "space",
+            "disgrace", "erase", "maze", "days"],
+    "eam": ["dream", "scheme", "team", "cream", "extreme", "beam", "redeem",
+            "self-esteem", "supreme", "gleam"],
+    # multi-syllable / slant banks (feature #4)
+    "ation": ["situation", "motivation", "salvation", "elevation", "celebration", "dedication",
+              "destination", "generation"],
+    "able": ["stable", "able", "table", "label", "fatal", "unstable", "capable", "unbreakable"],
+    "ust": ["trust", "must", "bust", "dust", "crust", "adjust", "disgust", "robust"],
+    "eatin": ["eatin'", "cheatin'", "leavin'", "believin'", "achievin'", "grievin'", "breathin'"],
+    "ition": ["condition", "position", "ambition", "tradition", "addition", "mission", "vision"],
 }
 
 _LINE_TEMPLATES: List[str] = [
@@ -173,6 +196,10 @@ _LINE_TEMPLATES: List[str] = [
     "Keep your circle small, 'cause the {R} get you {R}",
     "I'ma make it out, I swear it on the {R}",
 ]
+
+# Approximate syllable count per template (with a one-syllable placeholder for
+# {R}) — used to pace line density against the beat's tempo (feature #1).
+_TEMPLATE_SYLLABLES: List[int] = [count_syllables(t.replace("{R}", "X")) for t in _LINE_TEMPLATES]
 
 # Themed lead-ins keyed by topic keyword — injected as the first lines of a verse
 # or the anchor line of a hook so the requested topic actually shows up.
@@ -272,6 +299,16 @@ def _pick_rhyme_bank(rng: random.Random) -> str:
     return rng.choice(list(_RHYME_BANKS.keys()))
 
 
+def _pick_template_near(target: int, rng: random.Random, spread: int = 2) -> str:
+    """Sample a line template whose syllable count is close to the budget."""
+    candidates = [
+        t for t, s in zip(_LINE_TEMPLATES, _TEMPLATE_SYLLABLES) if abs(s - target) <= spread
+    ]
+    if not candidates:
+        candidates = _LINE_TEMPLATES
+    return rng.choice(candidates)
+
+
 def _render_line(template: str, rhyme_words: List[str]) -> str:
     # fill {R} slots left-to-right, cycling through the rhyme words so a line
     # with two slots uses two different words (e.g. "the pain ... the rain").
@@ -314,6 +351,7 @@ def _generate_section(
     flow = spec.flow or _flow_for(artist, ctx)
     cadence = _cadence_for(artist, ctx)
     density = _density_for(artist, ctx)
+    target = syllable_target(ctx.bpm, cadence, density)  # feature #1 flow budget
 
     rhyme = _pick_rhyme_bank(rng)
     # copy before shuffling — shuffling the module-level bank in place would
@@ -347,7 +385,7 @@ def _generate_section(
                 else:
                     line = prefix + line[0].lower() + line[1:]
         else:
-            tmpl = rng.choice(_LINE_TEMPLATES)
+            tmpl = _pick_template_near(target, rng)
             line = _render_line(tmpl, pair)
         # apply signature opener to the very first line of the section
         if i == 0 and artist.signature_openers:
@@ -365,6 +403,8 @@ def _generate_section(
         "flow": flow,
         "cadence": cadence,
         "density": density,
+        "syllable_target": target,
+        "artist": artist.name,
         "mood": mood,
         "topic": topic,
         "rhyme": rhyme,
@@ -421,12 +461,25 @@ class LyricsResult:
     def full_text(self) -> str:
         out: List[str] = []
         for s in self.sections:
-            out.append(f"[{s['role']} — {s['flow']} @ {s['cadence']} cadence]")
+            who = s.get("artist") or self.artist
+            out.append(f"[{s['role']} — {s['flow']} @ {s['cadence']} cadence — {who}]")
             out.extend(s["lines"])
             if s["ad_libs"]:
                 out.append("  " + ", ".join(f"({a})" for a in s["ad_libs"]))
             out.append("")
         return "\n".join(out).strip()
+
+    def annotated(self) -> dict:
+        """Per-line syllable + rhyme annotations (feature #2)."""
+        from .lyrictools import annotate
+
+        return annotate(self)
+
+    def to_sheet(self) -> str:
+        """Markdown studio sheet with bar counts and ad-lib cues (feature #9)."""
+        from .lyrictools import sheet
+
+        return sheet(self)
 
 
 def generate(ctx: BeatContext) -> LyricsResult:
@@ -442,7 +495,15 @@ def generate(ctx: BeatContext) -> LyricsResult:
 
     rng = random.Random(ctx.seed)
     structure = ctx.structure or list(_DEFAULT_STRUCTURE)
-    sections = [_generate_section(artist, ctx, s, rng) for s in structure]
+    sections = []
+    for s in structure:
+        # multi-artist feature mode (#6): a section can override the artist
+        sec_artist = artist
+        if s.artist:
+            a = get_artist(s.artist)
+            if a is not None:
+                sec_artist = a
+        sections.append(_generate_section(sec_artist, ctx, s, rng))
 
     # filter negative terms (feature #29): drop banned words from lines
     if ctx.negative:
@@ -462,6 +523,18 @@ def generate(ctx: BeatContext) -> LyricsResult:
     )
 
 
+def arrangement_presets() -> Dict[str, List[SectionSpec]]:
+    """Named section layouts (feature #5)."""
+    return {name: arrangement_specs(name) for name in ARRANGEMENTS}
+
+
+def arrangement_specs(name: str) -> List[SectionSpec]:
+    arr = ARRANGEMENTS.get((name or "").strip().lower())
+    if not arr:
+        return []
+    return [SectionSpec(role=r, bars=b) for r, b in arr]
+
+
 def regenerate_section(ctx: BeatContext, role: str, seed: Optional[int] = None) -> dict:
     """Re-generate a single section, keeping the rest of the context (feature #40)."""
     artist = ctx.artist_obj()
@@ -473,7 +546,20 @@ def regenerate_section(ctx: BeatContext, role: str, seed: Optional[int] = None) 
 
 
 def restyle(prev: LyricsResult, new_artist: str, seed: Optional[int] = None) -> LyricsResult:
-    """Re-render existing lyrics in a different artist's style (feature #41)."""
+    """Re-render existing lyrics in a different artist's style (feature #41).
+
+    Feature-pinned sections (an explicit per-section artist that differs from the
+    base artist) are preserved; everything else is re-rendered in ``new_artist``.
+    """
+    base_name = prev.artist
+    structure = [
+        SectionSpec(
+            role=s["role"],
+            bars=s["bars"],
+            artist=(s.get("artist") or "") if (s.get("artist") or "") != base_name else "",
+        )
+        for s in prev.sections
+    ]
     ctx = BeatContext(
         bpm=prev.bpm,
         key=prev.key,
@@ -482,7 +568,7 @@ def restyle(prev: LyricsResult, new_artist: str, seed: Optional[int] = None) -> 
         topic=prev.topic,
         artist=new_artist,
         seed=seed if seed is not None else prev.seed,
-        structure=[SectionSpec(role=s["role"], bars=s["bars"]) for s in prev.sections],
+        structure=structure,
     )
     return generate(ctx)
 
@@ -493,6 +579,7 @@ def restyle(prev: LyricsResult, new_artist: str, seed: Optional[int] = None) -> 
 def _llm_prompt(ctx: BeatContext, artist: Artist) -> str:
     structure = ctx.structure or list(_DEFAULT_STRUCTURE)
     secs = ", ".join(f"{s.role}({s.bars} bars)" for s in structure)
+    features = ", ".join(f"{s.role} in the style of {s.artist}" for s in structure if s.artist)
     return (
         f"You are a ghostwriter in the style of {artist.name} ({artist.vibe()}).\n"
         f"Beat analysis: {ctx.bpm} BPM, key {ctx.key}, swing feel {ctx.swing}, "
@@ -504,6 +591,7 @@ def _llm_prompt(ctx: BeatContext, artist: Artist) -> str:
         f"Write original lyrics ONLY (no explanations). Format each section as:\n"
         f"[SECTION] (one of intro/verse/hook/chorus/bridge/outro) followed by its lines.\n"
         f"Match the {artist.cadence} cadence and {artist.rhyme_scheme} rhyme scheme.\n"
+        + (f"Feature sections: {features}.\n" if features else "")
         + (f"Avoid these words: {', '.join(ctx.negative)}.\n" if ctx.negative else "")
     )
 

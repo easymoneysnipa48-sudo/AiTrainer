@@ -212,6 +212,21 @@ def history_diff(a: Dict[str, Any], b: Dict[str, Any]) -> List[str]:
 # --------------------------------------------------------------------------- #
 # Helper: assemble a BeatContext-friendly recipe dict from loose CLI inputs.
 # --------------------------------------------------------------------------- #
+def autopilot(root: Path, seed: Optional[int] = None) -> Dict[str, Any]:
+    """Style-profile autopilot (feature #10): auto-pick artist/mood/topic.
+
+    Uses the accumulated rating profile when there is enough signal; otherwise
+    falls back to a surprise-me recipe. Returns a canonical recipe dict.
+    """
+    from .lyricrating import bias_recipe, load_profile
+
+    recipe = random_recipe(root, seed=seed)
+    profile = load_profile(root)
+    if profile.get("n_ratings", 0) >= 1:
+        recipe = bias_recipe(root, recipe, strength=0.75)
+    return recipe
+
+
 def normalize_recipe(
     artist: str = "",
     mood: str = "",

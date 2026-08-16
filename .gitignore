@@ -64,6 +64,7 @@ metadata/active_learning.json
 metadata/segment_duplicates.json
 metadata/checkpoint_registry.json
 metadata/eval_gate.json
+metadata/quality_gate.json
 metadata/training_monitor.json
 metadata/experiment_matrix.json
 metadata/model_card_*.md

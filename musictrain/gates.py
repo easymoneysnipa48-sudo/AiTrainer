@@ -142,6 +142,95 @@ def drift_detector(
     return result
 
 
+def _read_fad(root: Path) -> Optional[float]:
+    """Read the FAD (CLAP) score from ``metadata/metrics.json`` if present."""
+    p = root / "metadata" / "metrics.json"
+    if not p.exists():
+        return None
+    try:
+        rec = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    fad = rec.get("fad_clap")
+    return float(fad) if fad is not None else None
+
+
+def quality_gate(
+    root: Path,
+    cfg: Config,
+    fad: Optional[float] = None,
+    fad_threshold: Optional[float] = None,
+    allow_missing_fad: bool = True,
+) -> Dict[str, object]:
+    """Combined per-genre + FAD gate over eval results (wire into CI).
+
+    * **Per-genre** — groups ``metadata/eval_results.jsonl`` rows by genre and
+      enforces each genre's ``min_clap`` / ``max_abs_deviation`` from
+      ``cfg.eval.genre_gates`` (fallback ``default``).
+    * **FAD** — gates the FAD score (explicit ``fad`` arg, else read from
+      ``metadata/metrics.json``) against ``fad_threshold`` (default from
+      ``cfg.metrics.fad_threshold``). A missing FAD is a soft-skip unless
+      ``allow_missing_fad=False``.
+
+    Returns a verdict dict (``passed`` key) and writes ``quality_gate.json``.
+    Caller maps ``passed: False`` to exit code 1.
+    """
+    from .evalx import fad_gate, per_genre_gate
+
+    rows = load_results(root)
+    if not rows:
+        console.error("No eval results — run `musictrain eval` first.")
+        return {"passed": False, "reason": "no eval results"}
+
+    genre_out = per_genre_gate(rows, cfg.eval.genre_gates or {})
+
+    if fad is None:
+        fad = _read_fad(root)
+    if fad_threshold is None:
+        fad_threshold = cfg.metrics.fad_threshold
+    fad_out = fad_gate(fad, float(fad_threshold))
+
+    if fad_out["passed"] is None:
+        fad_blocking = not allow_missing_fad
+        fad_verdict = "skip" if allow_missing_fad else "BLOCK (FAD missing)"
+    else:
+        fad_blocking = not fad_out["passed"]
+        fad_verdict = "ok" if fad_out["passed"] else "BLOCK"
+
+    genre_blocking = not genre_out["passed"]
+    passed = (not genre_blocking) and (not fad_blocking)
+
+    report = {
+        "passed": passed,
+        "genre_gate": genre_out,
+        "fad_gate": fad_out,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    out = root / "metadata" / "quality_gate.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2))
+
+    console.info(
+        f"Per-genre gate: {'PASSED' if genre_out['passed'] else 'FAILED'} "
+        f"({len(genre_out['genres'])} genres)"
+    )
+    for g, r in genre_out["genres"].items():
+        flag = "ok" if r["passed"] else "FAIL"
+        console.info(
+            f"  {g}: clap={r['mean_clap']} dev={r['mean_abs_deviation']} "
+            f"(min_clap={r['min_clap']}, max_dev={r['max_dev']}) [{flag}]"
+        )
+    console.info(
+        f"FAD gate: {fad_verdict} (fad={fad_out['fad']}, "
+        f"threshold={fad_out['threshold']})"
+    )
+    if passed:
+        console.ok("Quality gate PASSED.")
+    else:
+        console.warn("Quality gate FAILED.")
+    return report
+
+
 def promotion_report(
     root: Path,
     cfg: Config,

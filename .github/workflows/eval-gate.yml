@@ -50,3 +50,6 @@ jobs:
 
       - name: Run eval regression gate on fixtures
         run: python .github/scripts/run_gate.py
+
+      - name: Run FAD + per-genre quality gates
+        run: python .github/scripts/run_quality_gates.py

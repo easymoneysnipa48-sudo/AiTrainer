@@ -177,6 +177,7 @@ class MetricsCfg:
     hop_length: int = 512
     n_fft: int = 1024
     fad_eps: float = 1e-6     # covariance regularization for FAD (#41)
+    fad_threshold: float = 10.0  # FAD gate: score above this blocks promotion
 
 
 @dataclass

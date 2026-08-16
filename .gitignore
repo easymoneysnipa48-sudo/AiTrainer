@@ -75,6 +75,11 @@ metadata/cost_log.jsonl
 metadata/config_lint.json
 metadata/*.bak
 metadata/export/
+# lyrics LLM fine-tuning artifacts (derived from the source corpus)
+lyrics/
+metadata/lyrics_*.jsonl
+metadata/lyric_history.jsonl
+metadata/lyric_profile.json
 data/augmented/
 data/resynth/
 data/resynth_instrumental/

@@ -82,6 +82,14 @@ def test_generate_still_deterministic_and_structured():
     assert all(s["lines"] for s in a.sections)
 
 
+def test_local_model_env_falls_back_to_offline(monkeypatch):
+    """A bad MUSICTRAIN_LLM_MODEL_PATH must not break generation (offline fallback)."""
+    monkeypatch.setenv("MUSICTRAIN_LLM_MODEL_PATH", "/nonexistent/adapter-dir")
+    r = lyrics.generate(_pain_ctx(seed=3))
+    assert r.backend == "offline"
+    assert r.sections and r.sections[0]["lines"]
+
+
 # --------------------------------------------------------------------------- #
 # Expanded content library
 # --------------------------------------------------------------------------- #

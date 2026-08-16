@@ -172,43 +172,76 @@ def maybe_ddp(model, device: str):
 
 def _encode_batch(model, processor, batch: List[Tuple[Path, str]], device: str,
                   use_bf16: bool):
-    """Encode one batch to EnCodec codes + text-conditioning hidden states."""
+    """Encode one batch to EnCodec codes + text-conditioning tensors."""
     import soundfile as sf
     import torch
 
-    input_values = []
-    text_inputs = None
+    audios: List[torch.Tensor] = []
+    descs: List[str] = []
     for path, desc in batch:
         audio, _ = sf.read(str(path), dtype="float32", always_2d=True)
         audio = audio.mean(axis=1)
-        input_values.append(torch.from_numpy(audio)[None, None].to(device))
-        ti = processor(text=desc, return_tensors="pt", padding=True)
-        ti = {k: v.to(device) for k, v in ti.items()}
-        if text_inputs is None:
-            text_inputs = ti
-    iv = torch.cat(input_values, dim=0)
+        audios.append(torch.from_numpy(audio)[None, None].to(device))
+        descs.append(desc)
+    iv = torch.cat(audios, dim=0)
     if use_bf16:
         iv = iv.to(dtype=torch.bfloat16)
+    text_inputs = processor(text=descs, return_tensors="pt", padding=True)
+    text_inputs = {k: v.to(device) for k, v in text_inputs.items()}
     with torch.no_grad():
-        enc = model.encodec(iv)
-        codes = enc.audio_codes[:, 0, :].to(device)  # [B, T] single codebook
-        hidden = model.text_encoder(**text_inputs).last_hidden_state
-        hidden = model.encoder_proj(hidden) if hasattr(model, "encoder_proj") else hidden
-    return codes, hidden
+        encoder = getattr(model, "audio_encoder", None) or getattr(model, "encodec", None)
+        enc = encoder.encode(iv)
+        codes = enc.audio_codes
+        # transformers 5.x nests an extra dim: (B, 1, n_codebooks, T)
+        if codes.ndim == 4:
+            codes = codes[:, 0]
+        codes = codes.contiguous()  # [B, n_codebooks, T]
+        return codes, text_inputs
 
 
-def _decoder_loss(model, codes, hidden, use_bf16: bool):
-    """Next-token cross-entropy on the decoder, with optional bf16 autocast."""
+def _repair_musicgen_config(model) -> None:
+    """transformers 5.x nulls the codebook-pad ids (2048) as out-of-vocab;
+    restore them so the labels path can shift decoder tokens."""
+    for cfg in (getattr(model, "config", None), getattr(getattr(model, "config", None), "decoder", None)):
+        if cfg is None:
+            continue
+        for attr in ("pad_token_id", "decoder_start_token_id", "bos_token_id"):
+            if getattr(cfg, attr, None) is None:
+                setattr(cfg, attr, 2048)
+
+
+def _decoder_loss(model, codes, text_inputs, use_bf16: bool):
+    """Next-token cross-entropy on the decoder, with optional bf16 autocast.
+
+    transformers 5.x reworked MusicGen: audio codes flow through the unified
+    ``forward`` with ``labels`` shaped ``(B, T, n_codebooks)``. Legacy versions
+    train the decoder submodule directly on codebook 0.
+    """
     import torch
 
+    if hasattr(model, "audio_encoder"):  # transformers >= 5.x
+        _repair_musicgen_config(model)
+        labels = codes.transpose(1, 2).contiguous()  # (B, T, n_codebooks)
+        if use_bf16:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                out = model(input_values=None, **text_inputs, labels=labels, use_cache=False)
+                return out.loss
+        out = model(input_values=None, **text_inputs, labels=labels, use_cache=False)
+        return out.loss
+    # legacy: next-token CE on codebook 0
+    codes0 = codes[:, 0, :]
+    hidden = model.text_encoder(**text_inputs).last_hidden_state
+    proj = getattr(model, "enc_to_dec_proj", None) or getattr(model, "encoder_proj", None)
+    if proj is not None:
+        hidden = proj(hidden)
     if use_bf16:
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             out = model.decoder(
-                input_ids=codes[:, :-1], encoder_hidden_states=hidden, labels=codes[:, 1:]
+                input_ids=codes0[:, :-1], encoder_hidden_states=hidden, labels=codes0[:, 1:]
             )
             return out.loss
     out = model.decoder(
-        input_ids=codes[:, :-1], encoder_hidden_states=hidden, labels=codes[:, 1:]
+        input_ids=codes0[:, :-1], encoder_hidden_states=hidden, labels=codes0[:, 1:]
     )
     return out.loss
 

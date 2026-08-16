@@ -19,10 +19,14 @@ import os
 import random
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .artists import Artist, get_artist
+from .logging import get_logger
 from .lyrictools import ARRANGEMENTS, count_syllables, syllable_target
+
+log = get_logger("lyrics")
 
 # --------------------------------------------------------------------------- #
 # Beat context
@@ -685,6 +689,12 @@ def generate(ctx: BeatContext) -> LyricsResult:
         if llm is not None:
             return llm
 
+    local_path = os.environ.get("MUSICTRAIN_LLM_MODEL_PATH")
+    if local_path:
+        llm = _generate_local(ctx, artist, local_path)
+        if llm is not None:
+            return llm
+
     rng = random.Random(ctx.seed)
     structure = ctx.structure or list(_DEFAULT_STRUCTURE)
     sections = []
@@ -840,6 +850,75 @@ def _parse_llm(text: str, ctx: BeatContext) -> Optional[LyricsResult]:
         mood=ctx.mood, topic=ctx.topic, seed=ctx.seed,
         sections=sections, backend="llm",
     )
+
+
+_local_model_cache: Dict[str, tuple] = {}  # path -> (model, tokenizer, device)
+
+
+def _generate_local(ctx: BeatContext, artist: Artist, path: str) -> Optional[LyricsResult]:
+    """Generate with a locally fine-tuned model (a ``train-lyrics`` adapter dir).
+
+    Reads ``metadata.json`` inside the adapter dir for the base model name;
+    loads it + the LoRA adapter lazily (cached per path), builds the same
+    prompt as the hosted backend, and parses the reply with ``_parse_llm``.
+    Any failure falls back to the offline generator.
+    """
+    try:
+        import torch
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError:
+        return None
+
+    key = str(path)
+    try:
+        if key not in _local_model_cache:
+            p = Path(path)
+            meta: Dict[str, str] = {}
+            meta_path = p / "metadata.json"
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            base_name = meta.get("base_model") or ""
+            tok = AutoTokenizer.from_pretrained(str(p))
+            if tok.pad_token is None:
+                tok.pad_token = tok.eos_token
+            device = ("cuda" if torch.cuda.is_available()
+                      else ("mps" if getattr(torch.backends, "mps", None)
+                            and torch.backends.mps.is_available() else "cpu"))
+            if base_name:
+                base = AutoModelForCausalLM.from_pretrained(base_name, torch_dtype=torch.float32)
+                model = PeftModel.from_pretrained(base, str(p))
+            else:
+                model = AutoModelForCausalLM.from_pretrained(str(p), torch_dtype=torch.float32)
+            model.eval()
+            model.to(device)
+            _local_model_cache[key] = (model, tok, device)
+        model, tok, device = _local_model_cache[key]
+
+        msgs = [
+            {"role": "system", "content": "You write original rap lyrics in the requested style."},
+            {"role": "user", "content": _llm_prompt(ctx, artist)},
+        ]
+        prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        ids = tok(prompt, return_tensors="pt").to(device)
+        torch.manual_seed(ctx.seed)
+        with torch.no_grad():
+            out = model.generate(
+                **ids,
+                max_new_tokens=700,
+                do_sample=True,
+                temperature=0.9,
+                top_p=0.95,
+                pad_token_id=tok.pad_token_id,
+            )
+        text = tok.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
+        result = _parse_llm(text, ctx)
+        if result is not None:
+            result.backend = "local"
+        return result
+    except Exception:  # noqa: BLE001 - local backend is best-effort
+        log.warning("local model generation failed, falling back to offline: %s", path)
+        return None
 
 
 def _generate_llm(ctx: BeatContext, artist: Artist) -> Optional[LyricsResult]:

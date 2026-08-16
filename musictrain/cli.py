@@ -194,6 +194,55 @@ def cmd_finetune(args) -> int:
     return 0 if result else 1
 
 
+def cmd_lyricdataset(args) -> int:
+    from . import lyricdataset
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+    action = args.action or "import"
+    artists = [a.strip() for a in (args.artists or "").split(",") if a.strip()] or None
+    if action == "import":
+        if not args.src:
+            console.error("lyricdataset import needs at least one --src file")
+            return 2
+        summary = lyricdataset.build_dataset(
+            root, [Path(p) for p in args.src], artists=artists, limit=args.limit,
+        )
+        console.ok(f"Imported {summary['songs']} songs across {summary['artists']} artists")
+        return 0
+    if action == "split":
+        counts = lyricdataset.split_dataset(root, seed=args.seed)
+        console.ok(f"Split -> {counts}")
+        return 0
+    if action == "train-files":
+        counts = lyricdataset.write_training_files(root)
+        console.ok(f"Instruction files -> {counts}")
+        return 0
+    console.error(f"unknown lyricdataset action: {action}")
+    return 2
+
+
+def cmd_train_lyrics(args) -> int:
+    from .trainlyrics import train
+
+    cfg = _build_config(args)
+    result = train(
+        cfg.project_root, model=args.model, steps=args.steps, lr=args.lr,
+        r=args.r, out=args.out, seed=args.seed, per_device=args.batch,
+        accum=args.accum, warmup=args.warmup, max_len=args.max_len,
+        dry_run=args.dry_run,
+    )
+    return 0 if result else 1
+
+
+def cmd_beatlabels(args) -> int:
+    from .beatlabels import generate_labels
+
+    cfg = _build_config(args)
+    n = generate_labels(cfg.project_root, force=args.force)
+    return 0 if n else 1
+
+
 def cmd_tuning(args) -> int:
     from .tuning import run
 
@@ -2028,6 +2077,47 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--resume", default=None, help="Resume from a prior adapter/checkpoint dir (#3)")
     sp.add_argument("--no-leakage", action="store_true", help="Skip the train/val/test leakage guard (#8)")
     sp.set_defaults(func=cmd_finetune)
+
+    # lyricdataset (lyrics LLM fine-tuning prep)
+    sp = sub.add_parser(
+        "lyricdataset",
+        help="Import/prep lyric datasets (rap CSV / JSON / CSV) for artist-style LLM fine-tuning",
+    )
+    add_common(sp)
+    sp.add_argument("--action", choices=["import", "split", "train-files"], default="import")
+    sp.add_argument("--src", action="append", default=[], help="Source file (repeatable)")
+    sp.add_argument("--artists", default=None, help="Comma-separated artist filter")
+    sp.add_argument("--limit", type=int, default=0, help="Limit imported songs")
+    sp.add_argument("--seed", type=int, default=42, help="Split seed")
+    sp.set_defaults(func=cmd_lyricdataset)
+
+    # train-lyrics (LoRA fine-tune of a small LLM on the lyric dataset)
+    sp = sub.add_parser(
+        "train-lyrics",
+        help="LoRA fine-tune a small LLM on the lyric dataset (set MUSICTRAIN_LLM_MODEL_PATH to use it)",
+    )
+    add_common(sp)
+    sp.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct", help="Base chat model")
+    sp.add_argument("--steps", type=int, default=100, help="Gradient steps")
+    sp.add_argument("--lr", type=float, default=2e-4)
+    sp.add_argument("--r", type=int, default=8, help="LoRA rank")
+    sp.add_argument("--out", default="checkpoints/lyrics", help="Adapter output root")
+    sp.add_argument("--seed", type=int, default=42)
+    sp.add_argument("--batch", type=int, default=1, help="Per-device batch size")
+    sp.add_argument("--accum", type=int, default=4, help="Gradient accumulation steps")
+    sp.add_argument("--warmup", type=int, default=10, help="LR warmup steps")
+    sp.add_argument("--max-len", type=int, default=1024, help="Max tokens per example")
+    sp.add_argument("--dry-run", action="store_true", help="Validate dataset + print plan without loading a model")
+    sp.set_defaults(func=cmd_train_lyrics)
+
+    # beatlabels (auto-label segments for the audio fine-tune)
+    sp = sub.add_parser(
+        "beatlabels",
+        help="Auto-generate metadata/labels.csv keyed to the real segment stems (needed by finetune)",
+    )
+    add_common(sp)
+    sp.add_argument("--force", action="store_true", help="Overwrite an existing labels.csv")
+    sp.set_defaults(func=cmd_beatlabels)
 
     # tuning (gap #1-#7)
     sp = sub.add_parser(

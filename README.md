@@ -640,6 +640,45 @@ musictrain tuning --task inversion --concept my-style --examples a.wav b.wav
 musictrain tuning --task plan --model-bytes 4000000000 --vram-bytes 8000000000
 ```
 
+### Training your own models — lyrics + audio
+
+**Lyrics (artist-style LLM fine-tune).** Import your lyric files (the
+1.4M-row `updated_rappers.csv` corpus, any Genius export, or your own
+JSON/CSV), split, and build chat-format instruction files:
+
+```bash
+musictrain lyricdataset --action import --src ~/Desktop/Projects/Docu/updated_rappers.csv
+musictrain lyricdataset --action import --src my_lyrics.json --artists "drake,future"
+musictrain lyricdataset --action split --seed 42
+musictrain lyricdataset --action train-files
+```
+
+Then LoRA fine-tune a small open LLM (Qwen2.5-1.5B-Instruct fits on the
+Mac's MPS) and use it from the lyrics engine:
+
+```bash
+musictrain train-lyrics --steps 100 --lr 2e-4 --r 8 --out checkpoints/lyrics
+musictrain train-lyrics --dry-run                  # validate dataset, no model load
+MUSICTRAIN_LLM_MODEL_PATH=checkpoints/lyrics/qwen2.5-1.5b-instruct-* \
+  musictrain lyrics --artist drake --topic pain --seed 7
+```
+
+`MUSICTRAIN_LLM_MODEL_PATH` switches the engine to your fine-tuned model
+(with the offline template engine as automatic fallback); the hosted-LLM
+backend (`MUSICTRAIN_LLM_API_KEY`) still takes precedence when set.
+
+**Audio / instrumentals (MusicGen LoRA).** Label the real segments, then
+fine-tune — the trainer reads `metadata/labels.csv` keyed to the segment
+filenames, so run `beatlabels` first if your labels are generic:
+
+```bash
+musictrain beatlabels --force            # auto-labels segments from measured BPM/key
+musictrain finetune --steps 30 --lr 1e-4 --r 8 --out adapters/   # LoRA on MusicGen
+```
+
+**Acapella.** Same audio pipeline — normalize vocals-only WAVs and use the
+lyric transcript as the description in `labels.csv`.
+
 ### Extended evaluation — `musictrain evalx`
 
 ```bash

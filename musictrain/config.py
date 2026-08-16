@@ -182,6 +182,18 @@ class MetricsCfg:
 
 
 @dataclass
+class SettingsCfg:
+    """User-facing dashboard settings (Settings page)."""
+    theme: str = "dark"                 # dark | light | system
+    accent: str = "#5b8cff"             # accent-color token
+    lang: str = "en"                    # UI locale
+    default_model: str = "facebook/musicgen-small"  # pretrained template
+    upload_dir: str = "data/raw"        # where dashboard uploads land
+    download_dir: str = "downloads"     # where dashboard downloads are copied
+    allow_external_paths: bool = False  # permit upload/download dirs outside the project
+
+
+@dataclass
 class ExportCfg:
     format: str = "arrow"      # arrow | jsonl | csv (#26)
     which: str = "all"         # train | val | test | all
@@ -209,6 +221,7 @@ class Config:
     export: ExportCfg = field(default_factory=ExportCfg)
     eval: EvalCfg = field(default_factory=EvalCfg)
     metrics: MetricsCfg = field(default_factory=MetricsCfg)
+    settings: SettingsCfg = field(default_factory=SettingsCfg)
 
     # ------------------------------------------------------------------ #
     def to_dict(self) -> dict:

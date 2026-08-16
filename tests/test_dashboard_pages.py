@@ -17,7 +17,7 @@ PAGES = [
     "🏷️ Labels", "📊 Compare", "🧹 Hygiene", "🏆 Leaderboard",
     "📈 Training", "🔬 Analytics", "🧮 Metrics Lab", "🎯 Eval",
     "🎧 Listening", "✂️ Annotate", "🧪 Campaign",
-    "📦 Model Ops", "📡 Ops & Alerts", "🪵 Logs",
+    "📦 Model Ops", "📡 Ops & Alerts", "🪵 Logs", "⚙️ Settings",
 ]
 
 

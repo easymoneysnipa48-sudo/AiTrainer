@@ -27,24 +27,8 @@ log = get_logger("dashboard")
 
 
 # feature 37 — curated prompt templates (section/energy/BPM angle)
-_TEMPLATES = [
-    {"name": "Sparse intro", "section": "intro", "energy": "low",
-     "prompt": "sparse cinematic intro, 70 BPM, A minor, dark piano loop, airy pads, low energy, wide reverb"},
-    {"name": "Trap verse", "section": "verse", "energy": "mid",
-     "prompt": "melodic trap verse, 140 BPM, B minor, rolling 808 bass, trap hi-hats, pluck melody, aggressive"},
-    {"name": "Melodic chorus", "section": "chorus", "energy": "high",
-     "prompt": "melodic trap chorus, 96 BPM, A minor, dark piano, deep 808 bass, wide strings, powerful drums, emotional"},
-    {"name": "Emotional pre-chorus", "section": "pre-chorus", "energy": "mid",
-     "prompt": "emotional pre-chorus, 84 BPM, F minor, warm pads, soft piano, build tension, atmospheric"},
-    {"name": "Bridge breakdown", "section": "bridge", "energy": "low",
-     "prompt": "bridge breakdown, 90 BPM, C minor, stripped drums, ambient pads, melancholic, reflective"},
-    {"name": "Outro fade", "section": "outro", "energy": "low",
-     "prompt": "outro fade, 72 BPM, A minor, piano and pads fading out, dark, spacious, low energy"},
-    {"name": "Orchestral intro", "section": "intro", "energy": "low",
-     "prompt": "orchestral intro, 60 BPM, D minor, strings swells, timpani roll, cinematic, epic"},
-    {"name": "Full-song demo", "section": "full-song", "energy": "high",
-     "prompt": "full trap song demo, 140 BPM, E minor, intro verse chorus structure, 808 bass, trap hi-hats, dark piano, emotional"},
-]
+from musictrain.templates import PROMPT_TEMPLATES as _TEMPLATES
+from musictrain.templates import MODELS as _TEMPLATES_MODELS
 
 
 # --------------------------------------------------------------------------- #
@@ -210,27 +194,52 @@ def _os_theme() -> str:
     return "dark"
 
 
+_ACCENTS = {
+    "💙 Blue": "#5b8cff", "💜 Violet": "#7c5cff", "🩵 Cyan": "#22c1dc",
+    "💚 Green": "#2fbf71", "🩷 Pink": "#ff5c8a", "🧡 Amber": "#ffa53c",
+}
+
+
+def _apply_theme(mode: str) -> None:
+    """Resolve a theme mode into session state and resync both controls.
+
+    ``mt_theme_mode`` (dark/light/system) and ``mt_theme`` (concrete dark/light)
+    are plain session keys — never widget keys — so both the sidebar and the
+    Settings page can update them freely. Dropping the widget caches makes the
+    two controls re-read the canonical mode instead of drifting apart.
+    """
+    st.session_state["mt_theme_mode"] = mode
+    st.session_state["mt_theme"] = _os_theme() if mode == "system" else mode
+    for key in ("mt_theme_side", "set_theme_mode"):
+        st.session_state.pop(key, None)
+
+
+def _apply_accent(color: str) -> None:
+    """Set the accent token and resync the sidebar + Settings pickers."""
+    st.session_state["mt_accent"] = color
+    for key in ("mt_accent_side", "set_accent_pick"):
+        st.session_state.pop(key, None)
+
+
 def _toggle_theme() -> None:
     """Theme selector (dark / light / system) — features 1 & 67."""
     mode = st.segmented_control(
         "🎨 Theme", ["dark", "light", "system"],
         default=st.session_state.get("mt_theme_mode", "dark"),
-        key="mt_theme_mode",
+        key="mt_theme_side",
     )
-    if mode == "system":
-        st.session_state["mt_theme"] = _os_theme()
-    elif mode in ("dark", "light"):
-        st.session_state["mt_theme"] = mode
+    if mode:
+        _apply_theme(mode)
 
     # accent-color token picker (theme tokens)
-    accents = {
-        "💙 Blue": "#5b8cff", "💜 Violet": "#7c5cff", "🩵 Cyan": "#22c1dc",
-        "💚 Green": "#2fbf71", "🩷 Pink": "#ff5c8a", "🧡 Amber": "#ffa53c",
-    }
     cur = st.session_state.get("mt_accent", "#5b8cff")
-    label = next((k for k, v in accents.items() if v == cur), "💙 Blue")
-    pick = st.selectbox("🖌️ Accent", list(accents.keys()), index=list(accents.keys()).index(label), key="mt_accent_pick")
-    st.session_state["mt_accent"] = accents[pick]
+    label = next((k for k, v in _ACCENTS.items() if v == cur), "💙 Blue")
+    pick = st.selectbox(
+        "🖌️ Accent", list(_ACCENTS.keys()),
+        index=list(_ACCENTS.keys()).index(label), key="mt_accent_side",
+    )
+    if _ACCENTS[pick] != st.session_state.get("mt_accent"):
+        _apply_accent(_ACCENTS[pick])
 
 
 # --------------------------------------------------------------------------- #
@@ -297,10 +306,10 @@ _PALETTE_HTML = """
   var PAGES = ["📋 Inventory","🔧 Normalize","🏷️ Metadata","✂️ Segment & Split","🎛️ Generate",
     "🪄 Prompt builder","📏 Check BPM","🎬 Visualize","🏷️ Labels","📊 Compare","🧹 Hygiene",
     "🏆 Leaderboard","📈 Training","🔬 Analytics","🎯 Eval","🎧 Listening","✂️ Annotate","🧪 Campaign",
-    "🪵 Logs","🧮 Metrics Lab","📦 Model Ops","📡 Ops & Alerts"];
+    "🪵 Logs","🧮 Metrics Lab","📦 Model Ops","📡 Ops & Alerts","⚙️ Settings"];
   var SHORTCUTS = {g:"🎛️ Generate", l:"🏆 Leaderboard", c:"📊 Compare", h:"🧹 Hygiene",
     i:"📋 Inventory", n:"🔧 Normalize", m:"🏷️ Metadata", b:"📏 Check BPM",
-    t:"📈 Training", a:"🔬 Analytics", v:"🎬 Visualize", e:"🎯 Eval"};
+    t:"📈 Training", a:"🔬 Analytics", v:"🎬 Visualize", e:"🎯 Eval", s:"⚙️ Settings"};
   var box = document.getElementById("mt-palette");
   var input = document.getElementById("mt-palette-input");
   var results = document.getElementById("mt-palette-results");
@@ -1117,13 +1126,13 @@ def page_generate() -> None:
     cfg = load_cfg()
 
     # feature 37 — template library (apply fills the prompt area)
-    t_names = ["— custom —"] + [t["name"] for t in _TEMPLATES]
+    t_names = ["— custom —"] + [t.name for t in _TEMPLATES]
     tc1, tc2 = st.columns([3, 1])
     tpl = tc1.selectbox("📚 Template", t_names, index=0, key="gen_tpl")
     if tc2.button("Apply template", key="gen_tpl_apply", width="stretch"):
-        hit = next((t for t in _TEMPLATES if t["name"] == tpl), None)
+        hit = next((t for t in _TEMPLATES if t.name == tpl), None)
         if hit:
-            st.session_state["gen_prompt"] = hit["prompt"]
+            st.session_state["gen_prompt"] = hit.prompt
             st.rerun()
 
     prompt = st.text_area(
@@ -1133,10 +1142,13 @@ def page_generate() -> None:
         key="gen_prompt",
     )
     c1, c2, c3, c4 = st.columns(4)
+    _model_ids = [m.model_id for m in _TEMPLATES_MODELS]
+    _id_to_name = {m.model_id: m.name for m in _TEMPLATES_MODELS}
     model = c1.selectbox(
         "Model",
-        ["facebook/musicgen-small", "facebook/musicgen-medium", "facebook/musicgen-melody"],
+        _model_ids,
         index=0, key="gen_model",
+        format_func=lambda mid: _id_to_name.get(mid, mid),
     )
     guidance = c2.slider("Guidance", 1.0, 10.0, 3.0, 0.5, key="gen_guidance")
     tokens = c3.slider("Max new tokens", 64, 1500, 256, 64, key="gen_tokens")
@@ -2795,6 +2807,157 @@ def page_analytics() -> None:
         analyteviz.model_size_cost(cfg)
 
 
+# --------------------------------------------------------------------------- #
+# ⚙️ Settings
+# --------------------------------------------------------------------------- #
+def page_settings() -> None:
+    _page_header("⚙️", "Settings", "Appearance, pretrained templates, and file transfers.")
+    from musictrain import transfer
+    from musictrain.templates import MODELS, find_model_by_name
+
+    cfg = load_cfg()
+    cfg_path = ROOT / "configs" / "default.yaml"
+
+    # ---------------- Appearance ---------------- #
+    st.subheader("🎨 Appearance")
+    ac1, ac2 = st.columns(2)
+    mode = ac1.segmented_control(
+        "Theme", ["dark", "light", "system"],
+        default=st.session_state.get("mt_theme_mode", "dark"),
+        key="set_theme_mode",
+    )
+    if mode and mode != st.session_state.get("mt_theme_mode"):
+        _apply_theme(mode)
+        st.rerun()
+
+    cur = st.session_state.get("mt_accent", cfg.settings.accent or "#5b8cff")
+    label = next((k for k, v in _ACCENTS.items() if v == cur), "💙 Blue")
+    accent = ac2.selectbox(
+        "🖌️ Accent", list(_ACCENTS.keys()),
+        index=list(_ACCENTS.keys()).index(label), key="set_accent_pick",
+    )
+    if _ACCENTS[accent] != st.session_state.get("mt_accent"):
+        _apply_accent(_ACCENTS[accent])
+        st.rerun()
+
+    lang = st.selectbox(
+        "🌐 Language", ["en", "es"],
+        index=0 if st.session_state.get("mt_lang", "en") == "en" else 1,
+        key="set_lang",
+    )
+    if lang != st.session_state.get("mt_lang", "en"):
+        st.session_state["mt_lang"] = lang
+        st.rerun()
+
+    # ---------------- Pretrained templates ---------------- #
+    st.subheader("🧠 Pretrained templates")
+    model_names = [m.name for m in MODELS]
+    cur_model = cfg.inference.model_name
+    idx = next((i for i, m in enumerate(MODELS) if m.model_id == cur_model), 0)
+    pick = st.selectbox("Default model", model_names, index=idx, key="set_def_model")
+    picked = find_model_by_name(pick)
+    if picked:
+        cap = f"{picked.description} {picked.size}"
+        if picked.melody_capable:
+            cap += " · 🎵 melody conditioning"
+        if picked.stereo:
+            cap += " · 🔉 stereo"
+        st.caption(cap)
+        st.code(picked.model_id, language=None)
+
+    c_set, c_cat = st.columns([1, 1])
+    if c_set.button("Set as default", key="set_def_apply"):
+        cfg.inference.model_name = picked.model_id
+        cfg.settings.default_model = picked.model_id
+        cfg.save(cfg_path)
+        st.success(f"Default model → {picked.model_id}")
+        st.rerun()
+    with c_cat.popover("📚 Model catalog", width="stretch"):
+        rows = [
+            {"name": m.name, "id": m.model_id, "size": m.size,
+             "melody": "✓" if m.melody_capable else "",
+             "stereo": "✓" if m.stereo else ""}
+            for m in MODELS
+        ]
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+    st.caption(
+        f"{len(_TEMPLATES)} prompt templates are available on the 🎛️ Generate and 🪄 Prompt builder pages."
+    )
+
+    # ---------------- Files & transfer ---------------- #
+    st.subheader("📂 Files & transfer")
+    allow_ext = st.toggle(
+        "🔓 Allow external paths", value=cfg.settings.allow_external_paths,
+        key="set_allow_ext",
+        help="Permit upload/download directories outside the project root.",
+    )
+    fu1, fu2 = st.columns(2)
+    up_dir_raw = fu1.text_input("Upload directory", value=cfg.settings.upload_dir, key="set_up_dir")
+    dn_dir_raw = fu2.text_input("Download directory", value=cfg.settings.download_dir, key="set_dn_dir")
+
+    up_dir = dn_dir = None
+    try:
+        up_dir = transfer.resolve_dir(up_dir_raw, ROOT, "data/raw", allow_ext)
+    except PermissionError as exc:
+        st.error(str(exc))
+    try:
+        dn_dir = transfer.resolve_dir(dn_dir_raw, ROOT, "downloads", allow_ext)
+    except PermissionError as exc:
+        st.error(str(exc))
+
+    if st.button("💾 Save settings", key="set_save"):
+        cfg.settings.allow_external_paths = allow_ext
+        cfg.settings.upload_dir = up_dir_raw
+        cfg.settings.download_dir = dn_dir_raw
+        cfg.settings.theme = st.session_state.get("mt_theme_mode", "dark")
+        cfg.settings.accent = st.session_state.get("mt_accent", "#5b8cff")
+        cfg.settings.default_model = cfg.inference.model_name
+        cfg.settings.lang = st.session_state.get("mt_lang", "en")
+        cfg.save(cfg_path)
+        st.success(f"Saved → {cfg_path}")
+        st.rerun()
+
+    st.markdown("#### ⬆ Upload")
+    up_files = st.file_uploader(
+        "Upload files to the upload directory",
+        type=["wav", "mp3", "flac", "ogg", "m4a", "aiff", "aif",
+              "csv", "json", "jsonl", "yaml", "pt", "bin", "safetensors"],
+        accept_multiple_files=True, key="set_upload",
+    )
+    if up_files and st.button("Save uploads", key="set_upload_save"):
+        if up_dir is None:
+            st.error("Upload directory is invalid — fix the path/permission above.")
+        else:
+            transfer.ensure_dir(up_dir)
+            n = 0
+            for f in up_files:
+                transfer.save_upload(f.getbuffer(), up_dir, f.name)
+                n += 1
+            st.success(f"Saved {n} file(s) → {up_dir}")
+            st.rerun()
+
+    st.markdown("#### ⬇ Download")
+    artifacts = transfer.list_artifacts(ROOT, ["outputs", "checkpoints", "metadata"])
+    if not artifacts:
+        st.info("No artifacts yet — generate some audio or train a checkpoint first.")
+    else:
+        labels = [str(p.relative_to(ROOT)) for p in artifacts]
+        sel = st.selectbox("Artifact", labels, key="set_dl_file")
+        src = ROOT / sel
+        c_dl, c_cp = st.columns(2)
+        c_dl.download_button(
+            "🌐 Download in browser", data=src.read_bytes(), file_name=src.name,
+            mime="application/octet-stream", key="set_dl_browser", width="stretch",
+        )
+        if c_cp.button("💾 Copy to directory", key="set_dl_copy", width="stretch"):
+            if dn_dir is None:
+                st.error("Download directory is invalid — fix the path/permission above.")
+            else:
+                dest, overwrote = transfer.copy_download(src, dn_dir)
+                st.success(f"Copied → {dest}" + (" (overwrote)" if overwrote else ""))
+
+
 PAGES = {
     "📋 Inventory": page_inventory,
     "🔧 Normalize": page_normalize,
@@ -2818,6 +2981,7 @@ PAGES = {
     "📦 Model Ops": page_modelops,
     "📡 Ops & Alerts": page_ops,
     "🪵 Logs": page_logs,
+    "⚙️ Settings": page_settings,
 }
 
 
@@ -2828,7 +2992,7 @@ _NAV_GROUPS = [
     ("🏷️ Curate", ["🏷️ Labels", "🧹 Hygiene", "🎧 Listening", "✂️ Annotate", "🧪 Campaign"]),
     ("📊 Evaluate", ["📊 Compare", "🏆 Leaderboard", "🧮 Metrics Lab", "🎯 Eval"]),
     ("🔬 Model", ["📈 Training", "🔬 Analytics", "📦 Model Ops"]),
-    ("🪵 System", ["📡 Ops & Alerts", "🪵 Logs"]),
+    ("🪵 System", ["📡 Ops & Alerts", "🪵 Logs", "⚙️ Settings"]),
 ]
 
 
@@ -2952,7 +3116,6 @@ def main() -> None:
     if not streamlit_gate():
         st.stop()
 
-    st.markdown(_theme_css(), unsafe_allow_html=True)
     _command_palette()
 
     history = st.session_state.setdefault("mt_history", [])
@@ -2974,6 +3137,10 @@ def main() -> None:
         _inspector()
         st.markdown("---")
         choice = _nav_ui()
+
+    # theme CSS is injected after the sidebar resolves the theme, so the
+    # toggle applies on a single click instead of requiring a second rerun.
+    st.markdown(_theme_css(), unsafe_allow_html=True)
 
     # breadcrumb history — feature 4
     if not history or history[-1] != choice:

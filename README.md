@@ -498,14 +498,14 @@ musictrain eval --incremental --seeds 3
 #     (.github/workflows/eval-gate.yml, .github/scripts/run_gate.py)
 ```
 
-## Dashboard — 20 pages, 70 UI features
+## Dashboard — 23 pages, 70 UI features
 
 Launch with `.venv/bin/streamlit run musictrain/dashboard.py`. The sidebar nav is
 grouped into collapsible sections; press **Ctrl/⌘+K** for the command palette
-(arrow keys + Enter to jump), or use the `g` / `l` / `c` / `t` / `a` / `v`
-keyboard shortcuts. Theme follows dark/light/system.
+(arrow keys + Enter to jump), or use the `g` / `l` / `c` / `t` / `a` / `v` / `s`
+keyboard shortcuts. Theme follows dark/light/system (single-click toggle).
 
-### Pages (20)
+### Pages (23)
 
 **📁 Data**
 - **📋 Inventory** — scan + quality-summarize the corpus
@@ -523,6 +523,8 @@ keyboard shortcuts. Theme follows dark/light/system.
 - **🏷️ Labels** — edit genre/mood/instrument labels against the controlled vocab
 - **🧹 Hygiene** — quality, dedup, drift, curation, leakage checks
 - **🎧 Listening** — A/B compare + star ratings to seed human ratings
+- **✂️ Annotate** — scrub/trim/loop clips while labeling
+- **🧪 Campaign** — blind listening campaigns with rater-agreement stats
 
 **📊 Evaluate**
 - **📊 Compare** — detected-vs-target BPM + stable-verdicts summary (reads MLflow)
@@ -538,6 +540,7 @@ keyboard shortcuts. Theme follows dark/light/system.
 **🪵 System**
 - **📡 Ops & Alerts** — cost attribution, runlog, alert thresholds, config lint
 - **🪵 Logs** — live CLI tail + structured runlog events
+- **⚙️ Settings** — theme/accent, pretrained model templates, and file upload/download with local-directory permission
 
 ### UI features (70)
 

@@ -159,6 +159,9 @@ def curation_histogram(cfg) -> None:
     if score_col not in pdf:
         st.caption("curation rows missing a score column")
         return
+    if pdf[score_col].apply(lambda v: pd.notna(v) and pd.api.types.is_number(v)).sum() < 2:
+        st.caption("curation scores have no numeric values to histogram")
+        return
     hist = (
         alt.Chart(pdf)
         .mark_bar(color="#2ad4c4")
@@ -245,11 +248,15 @@ def early_stop_curve() -> None:
     pdf = pd.DataFrame({"step": steps, "metric": metric})
     line = alt.Chart(pdf).mark_line(color="#5b8cff", point=True).encode(
         x=alt.X("step:Q"), y=alt.Y("metric:Q", scale=alt.Scale(zero=False)))
-    band = alt.Chart(pd.DataFrame({"lo": [24], "hi": [39]})).mark_rect(
-        opacity=0.15, color="#ffb020").encode(x="lo:Q", x2="hi:Q")
-    chart = (band + line).properties(height=180)
+    # patience-window boundaries as dashed rules (a rect with no y encoding
+    # produced an infinite y extent and Vega "scale bindings" warnings).
+    band = alt.Chart(pd.DataFrame({"x": [24.0, 39.0]})).mark_rule(
+        strokeWidth=1.5, color="#ffb020", opacity=0.6, strokeDash=[5, 4]).encode(
+        x=alt.X("x:Q"))
+    chart = (line + band).properties(height=180)
     st.altair_chart(chart, width="stretch")
-    st.caption("illustration — early-stop patience window shaded (live curve streams from MLflow during fine-tune)")
+    st.caption("illustration — early-stop patience window marked by dashed rules "
+               "(live curve streams from MLflow during fine-tune)")
 
 
 # --------------------------------------------------------------------------- #

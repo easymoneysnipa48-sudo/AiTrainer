@@ -37,6 +37,8 @@ class SectionSpec:
     mood: str = ""               # per-section override
     flow: str = ""               # per-section flow override
     artist: str = ""             # per-section artist override (feature mode #6)
+    artist2: str = ""            # duet partner — alternates bars within the section (#5)
+    energy: float = 0.0          # detected section energy 0..1 (intensity mapping #3)
 
 
 @dataclass
@@ -94,7 +96,13 @@ def beat_context_from_analysis(
         role = seg.get("role") or seg.get("label") or "verse"
         if role not in _BARS_BY_ROLE:
             role = "verse"
-        structure.append(SectionSpec(role=role, bars=_BARS_BY_ROLE[role]))
+        structure.append(
+            SectionSpec(
+                role=role,
+                bars=_BARS_BY_ROLE[role],
+                energy=float(seg.get("energy", 0.0)),
+            )
+        )
 
     if not structure:
         structure = list(_DEFAULT_STRUCTURE)
@@ -195,6 +203,15 @@ _LINE_TEMPLATES: List[str] = [
     "Now it's all {R}, everything I touch is {R}",
     "Keep your circle small, 'cause the {R} get you {R}",
     "I'ma make it out, I swear it on the {R}",
+    # simile / imagery lines (feature #2)
+    "I'm in the {R} like a king with no throne",
+    "Cold as the {R} when the winter wind blow",
+    "Shinin' through the {R} like a light in the dark",
+    "Ridin' on the {R} like it's my last ride",
+    "Deep as the {R}, I can't even find the bottom",
+    "Float over the {R} like a ghost in the night",
+    "Hard as the {R}, but I still keep my soft side",
+    "Lost in the {R} like a ship with no shore",
 ]
 
 # Approximate syllable count per template (with a one-syllable placeholder for
@@ -281,14 +298,18 @@ def _cadence_for(artist: Artist, ctx: BeatContext) -> str:
     return artist.cadence
 
 
-def _density_for(artist: Artist, ctx: BeatContext) -> int:
+def _density_for(artist: Artist, ctx: BeatContext, energy: float | None = None) -> int:
     d = artist.density
+    e = ctx.energy if energy is None else energy
     if ctx.bpm >= 130:
         d += 1
     if ctx.bpm <= 90:
         d = max(1, d - 1)
-    if ctx.energy > 0.7:
+    # beat-energy → intensity mapping (feature #3)
+    if e > 0.7:
         d += 1
+    elif e < 0.3:
+        d = max(1, d - 1)
     return max(1, min(5, d))
 
 
@@ -340,6 +361,7 @@ def _topic_leads(topic: str, mood: str, rng: random.Random) -> List[str]:
 
 def _generate_section(
     artist: Artist,
+    artist2: Optional[Artist],
     ctx: BeatContext,
     spec: SectionSpec,
     rng: random.Random,
@@ -350,26 +372,62 @@ def _generate_section(
     topic = spec.topic or ctx.topic
     flow = spec.flow or _flow_for(artist, ctx)
     cadence = _cadence_for(artist, ctx)
-    density = _density_for(artist, ctx)
+    energy = spec.energy if spec.energy else ctx.energy
+    density = _density_for(artist, ctx, energy=energy)
     target = syllable_target(ctx.bpm, cadence, density)  # feature #1 flow budget
 
-    rhyme = _pick_rhyme_bank(rng)
-    # copy before shuffling — shuffling the module-level bank in place would
-    # corrupt it and break seed determinism across calls
-    bank = list(_RHYME_BANKS[rhyme])
-    rng.shuffle(bank)
-    rhyme_words = bank[:]
+    # hook/verse contrast (feature #4): hooks short + punchy, verses denser
+    if role in ("hook", "chorus"):
+        target = max(6, target - 2)
+    elif role == "verse":
+        target = min(16, target + 1)
+
+    # rhyme-scheme enforcement (feature #1): map each line to a rhyme group
+    scheme = (artist.rhyme_scheme or "AABB").lower()
+
+    def _group(i: int) -> int:
+        if scheme == "aabb":
+            return i // 2
+        if scheme in ("abab", "internal"):
+            return i % 2
+        return 0  # "aaaa" and anything unrecognized
+
+    group_banks: Dict[int, str] = {}
+    group_words: Dict[int, List[str]] = {}
+    group_usage: Dict[int, int] = {}
+
+    def _bank_for(g: int) -> tuple:
+        if g not in group_banks:
+            bname = _pick_rhyme_bank(rng)
+            # copy before shuffling — shuffling the module-level bank in place
+            # would corrupt it and break seed determinism across calls
+            bank = list(_RHYME_BANKS[bname])
+            rng.shuffle(bank)
+            group_banks[g] = bname
+            group_words[g] = bank
+        return group_banks[g], group_words[g]
 
     lines: List[str] = []
+    line_rhymes: List[str] = []
+    line_artists: List[str] = []
+    ad_libs: List[str] = []
     prefix = _MOOD_PREFIX.get(mood.lower(), "")
     topic_leads = _topic_leads(topic, mood, rng)
     rng.shuffle(topic_leads)
 
     n = max(1, int(round(bars)))
+    seen_openers: set = set()
     for i in range(n):
-        rw = rhyme_words[i % len(rhyme_words)]
-        nxt = rhyme_words[(i + 1) % len(rhyme_words)]
+        # duet mode (#5): alternate artists per bar
+        who = artist if (artist2 is None or i % 2 == 0) else artist2
+        g = _group(i)
+        bname, words = _bank_for(g)
+        gi = group_usage.get(g, 0)
+        group_usage[g] = gi + 1
+        rw = words[gi % len(words)]
+        nxt = words[(gi + 1) % len(words)]
         pair = [rw, nxt]
+
         if role in ("hook", "chorus") and i == 0 and topic_leads:
             tmpl = topic_leads[0]
             lead = _render_line(tmpl, pair)
@@ -387,16 +445,25 @@ def _generate_section(
         else:
             tmpl = _pick_template_near(target, rng)
             line = _render_line(tmpl, pair)
-        # apply signature opener to the very first line of the section
-        if i == 0 and artist.signature_openers:
-            opener = rng.choice(artist.signature_openers)
+
+        # signature opener per rapper (duet-aware)
+        if who.name not in seen_openers and who.signature_openers:
+            opener = rng.choice(who.signature_openers)
             if not line.startswith(opener):
                 line = f"{opener} {line}"
+            seen_openers.add(who.name)
+
         lines.append(_ucfirst(line))
+        line_rhymes.append(bname)
+        line_artists.append(who.name)
 
-    # sprinkle ad-libs across the section
-    ad_libs = _sprinkle_adlibs(artist, ctx, n, rng)
+        # ad-lib sprinkling per line (duet-aware)
+        ad = _sprinkle_one(who, mood, rng)
+        if ad:
+            ad_libs.append(ad)
 
+    duet = artist2 is not None
+    who_label = f"{artist.name} & {artist2.name}" if duet else artist.name
     return {
         "role": role,
         "bars": n,
@@ -404,25 +471,27 @@ def _generate_section(
         "cadence": cadence,
         "density": density,
         "syllable_target": target,
-        "artist": artist.name,
+        "energy": round(energy, 3),
+        "artist": who_label,
+        "duet": duet,
         "mood": mood,
         "topic": topic,
-        "rhyme": rhyme,
+        "rhyme": scheme,
         "lines": lines,
+        "line_rhymes": line_rhymes,
+        "line_artists": line_artists,
         "ad_libs": ad_libs,
     }
 
 
-def _sprinkle_adlibs(artist: Artist, ctx: BeatContext, n: int, rng: random.Random) -> List[str]:
+def _sprinkle_one(artist: Artist, mood: str, rng: random.Random) -> str:
     pool = list(artist.ad_libs or ["yeah"])
-    mood_extra = _MOOD_ADLIB.get(ctx.mood.lower())
+    mood_extra = _MOOD_ADLIB.get(mood.lower())
     if mood_extra and mood_extra not in pool:
         pool.append(mood_extra)
-    out: List[str] = []
-    for i in range(n):
-        if rng.random() < 0.25:
-            out.append(rng.choice(pool))
-    return out
+    if rng.random() < 0.25:
+        return rng.choice(pool)
+    return ""
 
 
 def _banned(line: str, negatives: List[str]) -> bool:
@@ -503,7 +572,13 @@ def generate(ctx: BeatContext) -> LyricsResult:
             a = get_artist(s.artist)
             if a is not None:
                 sec_artist = a
-        sections.append(_generate_section(sec_artist, ctx, s, rng))
+        # duet mode (#5): a second artist alternates bars within the section
+        sec_artist2: Optional[Artist] = None
+        if s.artist2:
+            a2 = get_artist(s.artist2)
+            if a2 is not None:
+                sec_artist2 = a2
+        sections.append(_generate_section(sec_artist, sec_artist2, ctx, s, rng))
 
     # filter negative terms (feature #29): drop banned words from lines
     if ctx.negative:
@@ -521,6 +596,11 @@ def generate(ctx: BeatContext) -> LyricsResult:
         sections=sections,
         backend="offline",
     )
+
+
+def default_structure() -> List[SectionSpec]:
+    """A fresh copy of the default section layout (safe to mutate)."""
+    return [SectionSpec(role=s.role, bars=s.bars) for s in _DEFAULT_STRUCTURE]
 
 
 def arrangement_presets() -> Dict[str, List[SectionSpec]]:
@@ -542,7 +622,7 @@ def regenerate_section(ctx: BeatContext, role: str, seed: Optional[int] = None) 
         artist = get_artist("future")  # type: ignore[assignment]
     rng = random.Random(seed if seed is not None else ctx.seed)
     spec = SectionSpec(role=role, bars=_BARS_BY_ROLE.get(role, 8))
-    return _generate_section(artist, ctx, spec, rng)
+    return _generate_section(artist, None, ctx, spec, rng)
 
 
 def restyle(prev: LyricsResult, new_artist: str, seed: Optional[int] = None) -> LyricsResult:
@@ -552,14 +632,16 @@ def restyle(prev: LyricsResult, new_artist: str, seed: Optional[int] = None) -> 
     base artist) are preserved; everything else is re-rendered in ``new_artist``.
     """
     base_name = prev.artist
-    structure = [
-        SectionSpec(
-            role=s["role"],
-            bars=s["bars"],
-            artist=(s.get("artist") or "") if (s.get("artist") or "") != base_name else "",
-        )
-        for s in prev.sections
-    ]
+    structure = []
+    for s in prev.sections:
+        feat = (s.get("artist") or "") if (s.get("artist") or "") != base_name else ""
+        # a duet section's label is "X & Y" and won't resolve — drop it on restyle
+        if "&" in feat:
+            feat = ""
+        structure.append(SectionSpec(
+            role=s["role"], bars=s["bars"], artist=feat,
+            energy=float(s.get("energy", 0.0)),
+        ))
     ctx = BeatContext(
         bpm=prev.bpm,
         key=prev.key,

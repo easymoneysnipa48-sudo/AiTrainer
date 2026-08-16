@@ -2885,6 +2885,14 @@ def _ly_ctx(rec: dict, artist: str, mood: str, topic: str, seed: int,
     )
 
 
+def _ly_push_version(result) -> None:
+    """Keep the last N generations for undo/restore (feature #8)."""
+    versions = st.session_state.setdefault("ly_versions", [])
+    label = f"{result.artist} · {result.mood} · seed {result.seed}"
+    versions.insert(0, (label, result))
+    st.session_state["ly_versions"] = versions[:10]
+
+
 def _ly_arrangement_bar(sections: list) -> None:
     """Feature 36 — colored arrangement map of the generated sections."""
     palette = {
@@ -3040,18 +3048,24 @@ def page_lyrics() -> None:
                 r, t = part.split("=", 1)
                 override_map[r.strip().lower()] = t.strip()
 
-        # multi-artist feature mode (feature #6)
+        # multi-artist feature mode (#6) + duet (#5)
         features = st.text_input(
             "Feature artists (role=artist; …)",
-            placeholder="verse=drake; verse=gunna", key="ly_features",
+            placeholder="verse=drake; verse=future+gunna (duet)", key="ly_features",
         )
-        feature_map = {}
+        feature_map = {}   # role -> artist id
+        duet_map = {}      # role -> second artist id
         for part in features.split(";"):
             if "=" in part:
-                r, a = part.split("=", 1)
-                fa = A.get_artist(a.strip())
+                r, aid = part.split("=", 1)
+                parts = [p.strip() for p in aid.split("+") if p.strip()]
+                fa = A.get_artist(parts[0]) if parts else None
                 if fa:
                     feature_map[r.strip().lower()] = fa.id
+                    if len(parts) > 1:
+                        fa2 = A.get_artist(parts[1])
+                        if fa2:
+                            duet_map[r.strip().lower()] = fa2.id
 
     # ---------------- weights + negatives (features #28/#29) ---------------- #
     with st.expander("⚖️ Prompt weights & negatives"):
@@ -3078,13 +3092,14 @@ def page_lyrics() -> None:
         eff_mood = mood if mood != "(auto)" else "dark"
         eff_topic = topic or (g.topics[0] if g else "struggle")
     ctx = _ly_ctx(rec, artist_id, eff_mood, eff_topic, seed, roles, negatives, weights)
-    # apply per-section topic slots (feature #2) + feature artists (feature #6)
+    # apply per-section topic slots (feature #2) + feature artists (#6) + duets (#5)
     if override_map or feature_map:
         ctx.structure = [
             L.SectionSpec(
                 role=s.role, bars=s.bars,
                 topic=override_map.get(s.role, ""),
                 artist=feature_map.get(s.role, ""),
+                artist2=duet_map.get(s.role, ""),
             )
             for s in ctx.structure
         ]
@@ -3094,21 +3109,26 @@ def page_lyrics() -> None:
         result = L.generate(ctx)
         st.session_state["ly_result"] = result
         st.session_state["ly_ctx"] = ctx
+        _ly_push_version(result)
         prefs.record_history(ROOT, result.as_dict())
         _log_line(f"lyrics: {result.artist} {int(result.bpm)}bpm {result.mood}/{result.topic} seed={result.seed}")
 
     if gcol2.button("🎲 Re-roll", key="ly_reroll", width="stretch"):
         ctx.seed = seed + int(time.time()) % 97
-        st.session_state["ly_result"] = L.generate(ctx)
+        result = L.generate(ctx)
+        st.session_state["ly_result"] = result
         st.session_state["ly_ctx"] = ctx
+        _ly_push_version(result)
 
     # style-profile autopilot (feature #10)
     if gcol3.button("🤖 Auto-write", key="ly_autowrite", width="stretch"):
         r = prefs.autopilot(ROOT, seed=seed)
         auto_ctx = _ly_ctx(rec, r.get("artist", artist_id), r.get("mood", "dark"),
                            r.get("topic", "struggle"), seed, roles, negatives, weights)
-        st.session_state["ly_result"] = L.generate(auto_ctx)
+        result = L.generate(auto_ctx)
+        st.session_state["ly_result"] = result
         st.session_state["ly_ctx"] = auto_ctx
+        _ly_push_version(result)
         st.rerun()
 
     result = st.session_state.get("ly_result")
@@ -3148,7 +3168,7 @@ def page_lyrics() -> None:
         return
 
     _ly_arrangement_bar(result.sections)
-    c1, c2, c3 = st.columns([3, 1, 1])
+    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     with c1:
         st.caption(f"**{result.artist}** · {result.mood} · {result.topic} · {int(result.bpm)} BPM · {result.key} · seed {result.seed} · backend {result.backend}")
     with c2:
@@ -3157,6 +3177,17 @@ def page_lyrics() -> None:
     with c3:
         # studio sheet export (feature #9)
         st.download_button("⬇ Studio sheet (.md)", result.to_sheet(), file_name=slug + ".md", mime="text/markdown", key="ly_dl_sheet")
+    with c4:
+        # LRC karaoke export (feature #9)
+        st.download_button("⬇ .lrc", LT.lrc(result), file_name=slug + ".lrc", mime="text/plain", key="ly_dl_lrc")
+
+    # lyrical metrics (feature #6)
+    m = LT.metrics(result)
+    mm1, mm2, mm3, mm4 = st.columns(4)
+    mm1.metric("Flow score", f"{m['flow_score']}/100")
+    mm2.metric("Rhyme density", f"{m['rhyme_density']:.0%}")
+    mm3.metric("Avg syllables", m["avg_syllables"])
+    mm4.metric("Bars", m["bars"])
 
     for sec in result.sections:
         with st.expander(f"[{sec['role']}] {sec['bars']} bars · {sec['flow']} @ {sec['cadence']} · {sec.get('artist', result.artist)}", expanded=(sec["role"] in ("hook", "chorus"))):
@@ -3180,6 +3211,65 @@ def page_lyrics() -> None:
                 file_name=slug + "_edited.txt", mime="text/plain", key="ly_dl_edited",
                 width="stretch",
             )
+
+    # ---------------- side-by-side diff (feature #7) ---------------- #
+    with st.expander("🔍 Compare to another seed", expanded=False):
+        c1, c2 = st.columns(2)
+        other_seed = c1.number_input("Other seed", 0, 10**6, seed + 1, key="ly_diff_seed")
+        if c2.button("Generate & diff", key="ly_diff_btn", width="stretch"):
+            ctx2 = st.session_state.get("ly_ctx") or ctx
+            ctx2.seed = int(other_seed)
+            st.session_state["ly_diff_result"] = L.generate(ctx2)
+        diff_result = st.session_state.get("ly_diff_result")
+        if diff_result is not None:
+            d1, d2 = st.columns(2)
+            with d1:
+                st.caption(f"**seed {result.seed}**")
+                st.text(result.full_text())
+            with d2:
+                st.caption(f"**seed {diff_result.seed}**")
+                st.text(diff_result.full_text())
+            diff_lines = LT.diff_results(result, diff_result)
+            if diff_lines:
+                st.code("\n".join(diff_lines), language=None)
+
+    # ---------------- version history + undo (feature #8) ---------------- #
+    versions = st.session_state.get("ly_versions", [])
+    if len(versions) > 1:
+        with st.expander("🕘 Version history & undo", expanded=False):
+            labels = [v[0] for v in versions]
+            pick = st.selectbox("Previous versions", labels, key="ly_ver_pick")
+            if st.button("↩️ Restore selected", key="ly_ver_restore", width="stretch"):
+                idx = labels.index(pick)
+                st.session_state["ly_result"] = versions[idx][1]
+                st.rerun()
+
+    # ---------------- project save/load (feature #10) ---------------- #
+    with st.expander("💾 Project save / load", expanded=False):
+        from musictrain import lyricproject as proj
+
+        p1, p2 = st.columns(2)
+        proj_name = p1.text_input("Project name", value="session1", key="ly_proj_name")
+        if p1.button("💾 Save project", key="ly_proj_save", width="stretch"):
+            proj.save_project(ROOT, proj_name, {
+                "beat": str(beat_path),
+                "recipe": {"artist": result.artist, "mood": result.mood,
+                           "topic": result.topic, "seed": result.seed},
+                "structure": [{"role": s["role"], "bars": s["bars"],
+                               "artist": s.get("artist", "")}
+                              for s in result.sections],
+                "result": result.as_dict(),
+            })
+            st.success(f"project {proj_name!r} saved")
+        existing = proj.list_projects(ROOT)
+        if existing:
+            load_name = p2.selectbox("Load project", existing, key="ly_proj_load_sel")
+            if p2.button("📂 Load", key="ly_proj_load", width="stretch"):
+                data = proj.load_project(ROOT, load_name)
+                if data and data.get("result"):
+                    st.session_state["ly_loaded_project"] = data
+                    st.success(f"loaded {load_name!r} — its result is below")
+                    st.json(data.get("recipe", {}))
 
     # ---------------- rating + style profile (features #49/#50) ---------------- #
     st.markdown("---")

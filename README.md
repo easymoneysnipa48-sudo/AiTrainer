@@ -616,6 +616,13 @@ musictrain lyrics --auto                               # style-profile autopilot
 musictrain lyrics --analysis rec.json --suggest        # chords → mood/topic
 musictrain lyrics --analysis rec.json --vocals         # vocal/instrumental gate
 
+# craft & workflow (3rd batch)
+musictrain lyrics --feature verse=future+gunna         # duet (alternating bars)
+musictrain lyrics --metrics                            # rhyme density + flow score
+musictrain lyrics --lrc                                # karaoke .lrc timestamps
+musictrain lyrics --project-save demo                  # save beat+lyrics+settings
+musictrain lyrics --project-load demo                  # resume a saved project
+
 musictrain lyrate --task record --item a --artist future --score 0.8
 musictrain lyrate --task queue --n 10                   # blind A/B queue
 musictrain lyrate --task profile                        # personal style profile

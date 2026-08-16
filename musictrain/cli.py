@@ -542,11 +542,12 @@ def _print_section(sec: dict) -> None:
 def cmd_lyrics(args) -> int:
     import json as _json
 
-    from .lyrics import (BeatContext, arrangement_specs, beat_context_from_analysis,
-                         generate, regenerate_section, restyle)
+    from .lyrics import (BeatContext, SectionSpec, arrangement_specs,
+                         beat_context_from_analysis, default_structure, generate,
+                         regenerate_section, restyle)
     from .lyricsprefs import (add_favorite, favorite_keys, history, history_diff,
                               negatives, record_history, weights)
-    from .lyrictools import ARRANGEMENTS, annotate_section, suggest_from_chords
+    from .lyrictools import (ARRANGEMENTS, annotate_section, lrc, metrics, suggest_from_chords)
     from .util import sanitize_slug
 
     cfg = _build_config(args)
@@ -586,7 +587,22 @@ def cmd_lyrics(args) -> int:
         return 0
 
     # ---- build the recipe + context -------------------------------------------
-    recipe = _lyric_recipe(args, root)
+    loaded_structure = None
+    if args.project_load:
+        from .lyricproject import load_project
+
+        proj = load_project(root, args.project_load)
+        if proj is None:
+            console.error(
+                f"project {args.project_load!r} not found — run "
+                f"`musictrain lyrics --project-save NAME` first"
+            )
+            return 1
+        recipe = proj.get("recipe") or {}
+        loaded_structure = proj.get("structure") or None
+        console.ok(f"loaded project {args.project_load!r}")
+    else:
+        recipe = _lyric_recipe(args, root)
     artist = recipe["artist"]
     mood = recipe.get("mood", "")
     topic = recipe.get("topic", "")
@@ -629,6 +645,21 @@ def cmd_lyrics(args) -> int:
             k, v = w.split("=", 1)
             ctx.weights[k.strip()] = float(v)
 
+    # make sure there is a structure to mutate (preset/feature/duet need it)
+    if not ctx.structure:
+        ctx.structure = default_structure()
+
+    # restored project structure (feature #10)
+    if loaded_structure:
+        ctx.structure = [
+            SectionSpec(
+                role=s.get("role", "verse"), bars=s.get("bars", 8),
+                topic=s.get("topic", ""), artist=s.get("artist", ""),
+                artist2=s.get("artist2", ""), energy=s.get("energy", 0.0),
+            )
+            for s in loaded_structure
+        ]
+
     # arrangement preset (feature #5)
     if args.preset:
         specs = arrangement_specs(args.preset)
@@ -639,7 +670,7 @@ def cmd_lyrics(args) -> int:
             return 1
         ctx.structure = specs
 
-    # multi-artist feature mode (feature #6): --feature role=artist
+    # multi-artist feature mode (#6) + duet (#5): --feature role=artist[+artist2]
     if args.feature:
         from .artists import get_artist
 
@@ -648,14 +679,18 @@ def cmd_lyrics(args) -> int:
                 console.warn(f"ignoring malformed --feature {f!r} (expected role=artist)")
                 continue
             role, aid = f.split("=", 1)
-            a = get_artist(aid.strip())
+            parts = [p.strip() for p in aid.split("+") if p.strip()]
+            a = get_artist(parts[0]) if parts else None
             if a is None:
                 console.warn(f"unknown feature artist {aid.strip()!r}")
                 continue
+            a2 = get_artist(parts[1]) if len(parts) > 1 else None
             found = False
             for s in ctx.structure:
                 if s.role == role.strip().lower():
                     s.artist = a.id
+                    if a2 is not None:
+                        s.artist2 = a2.id
                     found = True
             if not found:
                 console.warn(f"no {role.strip()!r} section in the structure; ignoring feature")
@@ -739,6 +774,39 @@ def cmd_lyrics(args) -> int:
             sheet_path.parent.mkdir(parents=True, exist_ok=True)
             sheet_path.write_text(result.to_sheet())
             console.ok(f"studio sheet -> {sheet_path}")
+
+        # lyrical metrics (feature #6)
+        if args.metrics:
+            m = metrics(result)
+            console.info(
+                f"metrics: bars={m['bars']} lines={m['lines']} "
+                f"rhyme_density={m['rhyme_density']} avg_syll={m['avg_syllables']} "
+                f"std={m['syllable_std']} flow_score={m['flow_score']}/100"
+            )
+
+        # LRC karaoke export (feature #9)
+        if args.lrc is not None:
+            lrc_path = (Path(args.lrc) if args.lrc else root / "outputs" / "lyrics" / (slug + ".lrc"))
+            lrc_path.parent.mkdir(parents=True, exist_ok=True)
+            lrc_path.write_text(lrc(result))
+            console.ok(f"LRC -> {lrc_path}")
+
+        # project save (feature #10)
+        if args.project_save:
+            from .lyricproject import save_project
+
+            save_project(root, args.project_save, {
+                "beat": args.analysis or "",
+                "recipe": {"artist": recipe["artist"], "mood": mood, "topic": topic,
+                           "genre": recipe.get("genre", ""), "seed": result.seed},
+                "structure": [{"role": s.role, "bars": s.bars, "topic": s.topic,
+                               "artist": s.artist, "artist2": s.artist2, "energy": s.energy}
+                              for s in ctx.structure],
+                "weights": ctx.weights,
+                "negatives": ctx.negative,
+                "result": result.as_dict(),
+            })
+            console.ok(f"project saved as {args.project_save!r}")
 
         if args.favorite and args.favorite != "list":
             add_favorite(root, args.favorite, {
@@ -1828,10 +1896,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--restyle", default=None, help="Re-render the lyrics in another artist's style (id/name/alias)")
     sp.add_argument("--variants", type=int, default=None, help="Generate N seed variants for A/B (re-roll)")
     sp.add_argument("--preset", default=None, help="Arrangement preset (standard/hook-first/double-verse/16-bar-opener/short-form/long-form)")
-    sp.add_argument("--feature", action="append", default=None, help="Per-section artist override role=artist (repeatable)")
+    sp.add_argument("--feature", action="append", default=None, help="Per-section artist override role=artist (repeatable; artist1+artist2 = duet)")
     sp.add_argument("--auto", action="store_true", help="Style-profile autopilot (auto-pick artist/mood/topic)")
     sp.add_argument("--annotate", action="store_true", help="Print rhyme + syllable annotations per line")
+    sp.add_argument("--metrics", action="store_true", help="Print lyrical metrics (rhyme density, flow score)")
     sp.add_argument("--sheet", nargs="?", const="", default=None, help="Export a markdown studio sheet (optional path)")
+    sp.add_argument("--lrc", nargs="?", const="", default=None, help="Export LRC (karaoke) timestamps (optional path)")
+    sp.add_argument("--project-save", default=None, help="Save beat+lyrics+settings as a named project")
+    sp.add_argument("--project-load", default=None, help="Load a saved project by name")
     sp.add_argument("--suggest", action="store_true", help="Suggest mood/topic from the beat's chords (needs --analysis)")
     sp.add_argument("--vocals", action="store_true", help="Report the beat's vocal/instrumental verdict (needs --analysis)")
     sp.add_argument("--random", action="store_true", help="Assemble a surprise-me recipe")

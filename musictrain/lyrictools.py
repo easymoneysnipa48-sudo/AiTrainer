@@ -170,3 +170,83 @@ ARRANGEMENTS: Dict[str, List[tuple]] = {
 
 def arrangement_names() -> List[str]:
     return list(ARRANGEMENTS.keys())
+
+
+# --------------------------------------------------------------------------- #
+# Lyrical metrics (#6)
+# --------------------------------------------------------------------------- #
+def metrics(result: Any) -> Dict[str, Any]:
+    """Compute a small set of lyrical-quality metrics for a result.
+
+    - rhyme_density: fraction of adjacent line pairs sharing a rhyme group
+    - avg_syllables / syllable_std: pacing and consistency
+    - flow_score: a 0-100 composite heuristic
+    """
+    import statistics
+
+    all_lines: List[str] = []
+    rhyme_pairs = 0
+    rhyme_total = 0
+    bars = 0
+    for s in getattr(result, "sections", []):
+        all_lines.extend(s.get("lines", []))
+        bars += int(s.get("bars", 0))
+        rhymes = s.get("line_rhymes") or []
+        for i in range(1, len(rhymes)):
+            rhyme_total += 1
+            if rhymes[i] == rhymes[i - 1]:
+                rhyme_pairs += 1
+
+    sylls = [count_syllables(ln) for ln in all_lines]
+    avg = statistics.mean(sylls) if sylls else 0.0
+    std = statistics.pstdev(sylls) if len(sylls) > 1 else 0.0
+    rhyme_density = (rhyme_pairs / rhyme_total) if rhyme_total else 0.0
+
+    score = 50.0 + rhyme_density * 30.0
+    if 8 <= avg <= 14:
+        score += 10.0
+    score -= min(std, 4.0) * 5.0
+    score = max(0.0, min(100.0, score))
+
+    return {
+        "bars": bars,
+        "lines": len(all_lines),
+        "avg_syllables": round(avg, 2),
+        "syllable_std": round(std, 2),
+        "rhyme_density": round(rhyme_density, 3),
+        "flow_score": round(score),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# LRC (karaoke) export (#9)
+# --------------------------------------------------------------------------- #
+def lrc(result: Any) -> str:
+    """Timestamp each line as one bar, driven by the beat's BPM (4/4)."""
+    bpm = float(getattr(result, "bpm", 120.0) or 120.0)
+    bar_sec = (60.0 / bpm) * 4.0
+    t = 0.0
+    out: List[str] = []
+    for s in getattr(result, "sections", []):
+        for ln in s.get("lines", []):
+            mm = int(t // 60)
+            ss = t % 60
+            out.append(f"[{mm:02d}:{ss:05.2f}] {ln}")
+            t += bar_sec
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# Side-by-side diff (#7)
+# --------------------------------------------------------------------------- #
+def diff_results(a: Any, b: Any) -> List[str]:
+    """Unified diff between two results' full text."""
+    import difflib
+
+    return list(difflib.unified_diff(
+        a.full_text().splitlines(),
+        b.full_text().splitlines(),
+        fromfile=f"{getattr(a, 'artist', 'a')} seed={getattr(a, 'seed', '?')}",
+        tofile=f"{getattr(b, 'artist', 'b')} seed={getattr(b, 'seed', '?')}",
+        lineterm="",
+    ))

@@ -498,14 +498,14 @@ musictrain eval --incremental --seeds 3
 #     (.github/workflows/eval-gate.yml, .github/scripts/run_gate.py)
 ```
 
-## Dashboard — 17 pages, 70 UI features
+## Dashboard — 20 pages, 70 UI features
 
 Launch with `.venv/bin/streamlit run musictrain/dashboard.py`. The sidebar nav is
 grouped into collapsible sections; press **Ctrl/⌘+K** for the command palette
 (arrow keys + Enter to jump), or use the `g` / `l` / `c` / `t` / `a` / `v`
 keyboard shortcuts. Theme follows dark/light/system.
 
-### Pages (17)
+### Pages (20)
 
 **📁 Data**
 - **📋 Inventory** — scan + quality-summarize the corpus
@@ -527,13 +527,16 @@ keyboard shortcuts. Theme follows dark/light/system.
 **📊 Evaluate**
 - **📊 Compare** — detected-vs-target BPM + stable-verdicts summary (reads MLflow)
 - **🏆 Leaderboard** — checkpoint ranking + per-tag CLAP radar
+- **🧮 Metrics Lab** — every headline metric as live gauges, sparklines and per-genre tiles
 - **🎯 Eval** — run the fixed prompt set with per-prompt progress + scheduled auto-run
 
 **🔬 Model**
 - **📈 Training** — HUD, CLAP trend, MLflow matrix, cost, coverage, drift
 - **🔬 Analytics** — embeddings, active learning, curation, checkpoint timeline
+- **📦 Model Ops** — MLflow registry, backup snapshots, lineage graph
 
 **🪵 System**
+- **📡 Ops & Alerts** — cost attribution, runlog, alert thresholds, config lint
 - **🪵 Logs** — live CLI tail + structured runlog events
 
 ### UI features (70)
@@ -570,6 +573,115 @@ dropdown, sticky headers, inspector drawer, focus mode, sidebar mini-map.
 mini-map, popover settings, arrow-key navigation, progress-aware sidebar
 (pipeline checklist), theme tokens (`.streamlit/config.toml`), OS theme sync,
 print/PDF export, responsive layout, i18n string table.
+
+## New CLI commands (post-50)
+
+The `musictrain` CLI keeps growing beyond the original 50 advanced commands.
+These are the newest subcommands (each takes `--help` for full options).
+
+### Training helpers — `musictrain tuning`
+
+```bash
+musictrain tuning --task resume --adapters adapters/lora      # continue a fine-tune
+musictrain tuning --task hpo --metric leaderboard_score --trials 10
+musictrain tuning --task mlx                                  # MLX backend plan
+musictrain tuning --task quantize --model facebook/musicgen-small --bits 8
+musictrain tuning --task tokens --tokens "my-style" "dark-trap"   # custom style tokens
+musictrain tuning --task inversion --concept my-style --examples a.wav b.wav
+musictrain tuning --task plan --model-bytes 4000000000 --vram-bytes 8000000000
+```
+
+### Extended evaluation — `musictrain evalx`
+
+```bash
+musictrain evalx --task mos --clap 0.5 --clipping 0.0 --silence 0.0 --snr-db 10
+musictrain evalx --task ab --a-wins 15 --b-wins 5            # binomial sign test
+musictrain evalx --task leakage --ref data/clean --gen outputs/eval
+musictrain evalx --task robust --n 10                        # typo/phonetic prompts
+musictrain evalx --task fad-gate --ref data/clean --gen outputs/eval --threshold 10
+musictrain evalx --task genre-gate                           # per-genre CLAP/dev gates
+```
+
+### Adherence metrics — `musictrain adherence`
+
+Onset alignment, Camelot key adherence, structure-order scoring, duration
+adherence, band-energy instrument presence, seed-CLAP diversity, the
+reliability-vs-difficulty curve, and multiple-comparison correction
+(Bonferroni/BH-FDR). Writes `metadata/adherence.json`.
+
+### Deep signal analysis — `musictrain deep`
+
+```bash
+musictrain deep --path outputs/latest.wav        # single clip
+musictrain deep --dir clean --limit 100          # corpus scan
+```
+
+Reports intra-clip tempo drift (rushing/dragging), swing/microtiming, LUFS + RMS
+envelope + dynamic range, stereo width + phase correlation, an artifact detector
+(clicks/pops/DC/dropouts), spectral centroid/rolloff/bandwidth, onset-density
+map, and frequency-masking collisions → `metadata/deep_analysis.json`.
+
+### Data engineering — `musictrain dataeng`
+
+```bash
+musictrain dataeng --task transcribe --dir clean            # whisper ASR
+musictrain dataeng --task dedup                              # corpus-wide embedding dedup
+musictrain dataeng --task quality                            # SNR/clipping/loudness fields
+musictrain dataeng --task snapshot --label v1                # hash-verified snapshot
+musictrain dataeng --task expand --n 20                      # synthetic prompt expansion
+musictrain dataeng --task cooccur                            # tag co-occurrence
+musictrain dataeng --task sample --n 100 --seed 42          # balanced sampling
+musictrain dataeng --task provenance --source src --license apache-2.0
+musictrain dataeng --task annotate                           # batch pre-annotation
+```
+
+### Extended audio/data — `musictrain audioext`
+
+```bash
+musictrain audioext --task diarize --path talk.wav           # speaker diarization
+musictrain audioext --task midi --path hook.wav              # audio -> MIDI
+musictrain audioext --task augment --dir clean               # tempo/key-aware augment
+musictrain audioext --task bundle                             # portable dataset .zip
+musictrain audioext --task verify-bundle --path bundle.zip   # hash-check a bundle
+musictrain audioext --task fad-cache                          # precompute FAD ref stats
+```
+
+### Model ops — `musictrain modelops`
+
+```bash
+musictrain modelops --task migrate-aliases --name musicgen-style-models
+musictrain modelops --task ab --champion a --challenger b   # win-rate harness
+musictrain modelops --task auto-promote --candidate ckpt-b --baseline ckpt-a
+musictrain modelops --task lineage --parent a --child b --note "LoRA on a"
+musictrain modelops --task lineage-graph
+musictrain modelops --task checksum --path checkpoints/v1   # SHA-256 manifest
+musictrain modelops --task verify --path checkpoints/v1
+musictrain modelops --task rollback --name musicgen-style-models
+musictrain modelops --task cost-breakdown --model musicgen-small --prompts 44 --seeds 3
+musictrain modelops --task lint                              # config schema linter
+```
+
+### Checkpoint pruning, backup & serving
+
+```bash
+musictrain prune --top 3               # keep top-N by leaderboard score, archive rest
+musictrain backup --task snapshot      # snapshot MLflow + metadata state
+musictrain backup --task restore --archive backups/v1.zip --force
+musictrain backup --task list
+
+musictrain serve --port 8000           # FastAPI: now also streamed generation,
+#   bearer-token auth, and /health/live + /ready endpoints
+```
+
+`musictrain finetune` also gained gradient checkpointing, LR warmup + cosine
+decay, bf16 mixed precision, a streaming data loader, curriculum ordering,
+weight EMA, DDP, and a CFG sweep (`--lr-mode`, `--bf16`, `--stream`, etc.).
+
+The **FAD gate + per-genre gates** are enforced in CI via
+`.github/scripts/run_quality_gates.py` (self-tests the pure gate logic, then
+runs `gates.quality_gate` when `metadata/eval_results.jsonl` +
+`metrics.json` are present). FAD threshold lives under `metrics.fad_threshold`;
+per-genre thresholds under `eval.genre_gates` in `configs/default.yaml`.
 
 ## CI
 

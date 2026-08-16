@@ -13,7 +13,7 @@ DASHBOARD = pathlib.Path(__file__).resolve().parents[1] / "musictrain" / "dashbo
 
 PAGES = [
     "📋 Inventory", "🔧 Normalize", "🏷️ Metadata", "✂️ Segment & Split",
-    "🎛️ Generate", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize",
+    "🎛️ Generate", "🎤 Lyrics", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize",
     "🏷️ Labels", "📊 Compare", "🧹 Hygiene", "🏆 Leaderboard",
     "📈 Training", "🔬 Analytics", "🧮 Metrics Lab", "🎯 Eval",
     "🎧 Listening", "✂️ Annotate", "🧪 Campaign",

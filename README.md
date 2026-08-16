@@ -498,14 +498,14 @@ musictrain eval --incremental --seeds 3
 #     (.github/workflows/eval-gate.yml, .github/scripts/run_gate.py)
 ```
 
-## Dashboard — 23 pages, 70 UI features
+## Dashboard — 24 pages, 70 UI features
 
 Launch with `.venv/bin/streamlit run musictrain/dashboard.py`. The sidebar nav is
 grouped into collapsible sections; press **Ctrl/⌘+K** for the command palette
 (arrow keys + Enter to jump), or use the `g` / `l` / `c` / `t` / `a` / `v` / `s`
 keyboard shortcuts. Theme follows dark/light/system (single-click toggle).
 
-### Pages (23)
+### Pages (24)
 
 **📁 Data**
 - **📋 Inventory** — scan + quality-summarize the corpus
@@ -515,6 +515,7 @@ keyboard shortcuts. Theme follows dark/light/system (single-click toggle).
 
 **🎛️ Generate**
 - **🎛️ Generate** — MusicGen inference (prompt, guidance, sampling, batch, melody conditioning)
+- **🎤 Lyrics** — upload a beat, read its tempo/key/structure, and write rapper-style lyrics to it
 - **🪄 Prompt builder** — curated templates + gallery with waveform miniatures
 - **📏 Check BPM** — tempo-drift check + time-stretch fix (needle gauge)
 - **🎬 Visualize** — waveforms, spectrograms, chords, beat grid, structure, stems, CLAP
@@ -581,6 +582,35 @@ print/PDF export, responsive layout, i18n string table.
 
 The `musictrain` CLI keeps growing beyond the original 50 advanced commands.
 These are the newest subcommands (each takes `--help` for full options).
+
+### Rap / lyrics pivot — `musictrain artists`, `lyrics`, `lyrate`
+
+The app now analyzes your uploaded beats and writes rapper-style lyrics matched
+to their tempo/structure. 22 artist style profiles (Drake, Lil Durk, Future,
+Chief Keef, Kendrick, Gunna, Juice WRLD, Jay-Z, Kanye, Michael Jackson, …), 8
+genre templates, and an expanded mood catalog drive an offline, seedable
+engine (optional LLM backend via `MUSICTRAIN_LLM_API_KEY`).
+
+```bash
+musictrain artists                 # list 22 style profiles
+musictrain artists --show future   # full profile for one artist
+musictrain artists --moods         # expanded mood catalog
+musictrain artists --genres        # genre templates
+
+musictrain lyrics --analysis metadata/analysis.jsonl --artist "lil durk" \
+  --mood dark --topic pain --seed 7          # beat-driven lyrics
+musictrain lyrics --artist future --section hook          # regenerate one section
+musictrain lyrics --variants 3                          # seed-lock re-roll (A/B)
+musictrain lyrics --restyle drake                        # style transfer
+musictrain lyrics --random                              # surprise-me recipe
+musictrain lyrics --negative violence --weight topic=2.0 # negatives + weights
+musictrain lyrics --favorite my-preset                  # save a favorite
+musictrain lyrics --history 10 / --diff 1 2             # history + diff
+
+musictrain lyrate --task record --item a --artist future --score 0.8
+musictrain lyrate --task queue --n 10                   # blind A/B queue
+musictrain lyrate --task profile                        # personal style profile
+```
 
 ### Training helpers — `musictrain tuning`
 

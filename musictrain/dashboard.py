@@ -336,7 +336,7 @@ _PALETTE_HTML = """
 <script>
 (function () {
   var PAGES = ["📋 Inventory","🔧 Normalize","🏷️ Metadata","✂️ Segment & Split","🎛️ Generate",
-    "🪄 Prompt builder","📏 Check BPM","🎬 Visualize","🏷️ Labels","📊 Compare","🧹 Hygiene",
+    "🎤 Lyrics","🪄 Prompt builder","📏 Check BPM","🎬 Visualize","🏷️ Labels","📊 Compare","🧹 Hygiene",
     "🏆 Leaderboard","📈 Training","🔬 Analytics","🎯 Eval","🎧 Listening","✂️ Annotate","🧪 Campaign",
     "🪵 Logs","🧮 Metrics Lab","📦 Model Ops","📡 Ops & Alerts","⚙️ Settings"];
   var SHORTCUTS = {g:"🎛️ Generate", l:"🏆 Leaderboard", c:"📊 Compare", h:"🧹 Hygiene",
@@ -2840,6 +2840,283 @@ def page_analytics() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 🎤 Lyrics (rap/lyrics pivot — beat analysis -> lyrics generation)
+# --------------------------------------------------------------------------- #
+_LY_AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+
+
+def _analyze_beat_for_lyrics(path: str, cfg: Config) -> dict:
+    """Deep-analyze a beat for lyric shaping: key + swing + structure."""
+    from musictrain.audio.analysis import key_candidates, swing_ratio
+
+    cache = st.session_state.setdefault("ly_analysis", {})
+    if path in cache:
+        return cache[path]
+    rec = _analyze_clip(path, cfg)
+    try:
+        from musictrain.audio.features import load_audio
+
+        y, sr = load_audio(Path(path), sr=cfg.analysis.sr)
+        rec = dict(rec)
+        rec["key"] = key_candidates(y, sr, top_k=cfg.analysis.key_top_k)
+        rec["swing"] = swing_ratio(y, sr, hop_length=cfg.analysis.hop_length)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"key/swing analysis failed: {exc}")
+    cache[path] = rec
+    return rec
+
+
+def _ly_ctx(rec: dict, artist: str, mood: str, topic: str, seed: int,
+            roles: list, negative: list, weights: dict):
+    from musictrain import lyrics as L
+
+    key = (rec.get("key") or {}).get("key", "A minor")
+    bpm = float((rec.get("beat_grid") or {}).get("tempo", 140.0))
+    swing = (rec.get("swing") or {}).get("feel", "straight")
+    energies = [s.get("energy", 0.0) for s in (rec.get("structure") or {}).get("segments", [])]
+    energy = sum(energies) / len(energies) if energies else 0.5
+    bars = {"intro": 4, "verse": 16, "hook": 8, "chorus": 8, "bridge": 8,
+            "pre-chorus": 4, "outro": 4, "full-song": 16}
+    structure = [L.SectionSpec(role=r, bars=bars.get(r, 8)) for r in roles if r]
+    return L.BeatContext(
+        bpm=bpm, key=key, swing=swing, energy=energy,
+        artist=artist, mood=mood, topic=topic, structure=structure,
+        negative=negative, weights=weights, seed=seed,
+    )
+
+
+def _ly_arrangement_bar(sections: list) -> None:
+    """Feature 36 — colored arrangement map of the generated sections."""
+    palette = {
+        "intro": "#5b8cff", "verse": "#34d399", "hook": "#f59e0b",
+        "chorus": "#f472b6", "bridge": "#a78bfa", "outro": "#64748b",
+        "pre-chorus": "#22d3ee", "full-song": "#94a3b8",
+    }
+    total = max(1, sum(s.get("bars", 8) for s in sections))
+    cells = "".join(
+        f'<div style="flex:{s.get("bars", 8)};background:{palette.get(s.get("role", "verse"), "#888")};'
+        f'border-radius:6px;text-align:center;font-size:.72rem;color:#0b0e17;'
+        f'padding:8px 2px;margin:1px;overflow:hidden;white-space:nowrap;">'
+        f'{s.get("role", "?")}</div>'
+        for s in sections
+    )
+    st.markdown(
+        f'<div style="display:flex;width:100%;">{cells}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f"🧭 arrangement map · {total} bars total")
+
+
+def page_lyrics() -> None:
+    """Beat analysis → rapper-style lyrics: structure editor, per-section slots,
+    style presets, refinement (re-roll / regenerate / restyle), rating + profile."""
+    from musictrain import artists as A
+    from musictrain import lyrics as L
+    from musictrain import lyricrating as rating
+    from musictrain import lyricsprefs as prefs
+
+    _page_header("🎤", "Lyrics",
+                 "Upload a beat, read its tempo/key/structure, and write rapper-style lyrics to it.")
+    cfg = load_cfg()
+
+    # ---------------- beat source ---------------- #
+    up = st.file_uploader("Upload a beat", type=["wav", "mp3", "flac", "ogg", "m4a"], key="ly_up")
+    clean_dir = ROOT / "data" / "clean"
+    clean_files = sorted(
+        p for p in (clean_dir.iterdir() if clean_dir.exists() else [])
+        if p.is_file() and p.suffix.lower() in _LY_AUDIO_EXT
+    )
+    pick = st.selectbox(
+        "…or pick from data/clean", ["(none)"] + [p.name for p in clean_files], key="ly_pick",
+    )
+
+    beat_path: Path | None = None
+    if up is not None:
+        udir = ROOT / "data" / "lyric_uploads"
+        udir.mkdir(parents=True, exist_ok=True)
+        beat_path = udir / up.name
+        beat_path.write_bytes(up.getbuffer())
+    elif pick != "(none)":
+        beat_path = clean_dir / pick
+
+    if beat_path is None or not beat_path.exists():
+        _skeleton(3)
+        st.info("Upload a beat or pick one from data/clean to start writing to it.")
+        return
+
+    st.audio(str(beat_path))
+    with st.spinner("Analyzing beat (tempo, key, swing, structure)…"):
+        rec = _analyze_beat_for_lyrics(str(beat_path), cfg)
+
+    key = (rec.get("key") or {}).get("key", "?")
+    bpm = (rec.get("beat_grid") or {}).get("tempo", 0.0)
+    swing = (rec.get("swing") or {}).get("feel", "?")
+    segs = (rec.get("structure") or {}).get("segments", [])
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("BPM", f"{bpm:.1f}")
+    m2.metric("Key", key)
+    m3.metric("Swing", swing)
+    m4.metric("Sections", len(segs))
+
+    detected_roles = [s.get("role", "verse") for s in segs]
+    st.caption("detected structure: " + " → ".join(detected_roles))
+
+    # ---------------- style ---------------- #
+    st.subheader("🎛️ Style")
+    a1, a2, a3, a4 = st.columns(4)
+    artist = a1.selectbox("Artist", A.artist_names(), key="ly_artist")
+    genre_names = A.genre_names()
+    genre = a2.selectbox("Genre template", ["(none)"] + genre_names, key="ly_genre")
+    g = A.get_genre(genre)
+    mood = a3.selectbox("Mood", ["(auto)"] + list(A.MOODS), key="ly_mood")
+    topic = a4.text_input("Topic", value="", placeholder="pain / loyalty / success…", key="ly_topic")
+
+    if st.button("🎲 Surprise me", key="ly_surprise"):
+        r = prefs.random_recipe(ROOT, seed=int(time.time()) % 10**6)
+        st.session_state["ly_recipe"] = r
+        st.rerun()
+
+    # apply a random recipe if present
+    rr = st.session_state.get("ly_recipe")
+    if rr:
+        artist = next((a.name for a in A.ARTISTS if a.id == rr.get("artist")), artist)
+        mood = rr.get("mood", mood)
+        topic = rr.get("topic", topic)
+
+    if g and mood == "(auto)" and not topic:
+        mood = g.moods[0]
+        topic = g.topics[0]
+
+    # ---------------- structure editor (features #1/#2) ---------------- #
+    with st.expander("🧩 Structure editor & per-section slots", expanded=True):
+        default_arr = ",".join(detected_roles) or "intro,verse,hook,verse,hook,outro"
+        arrangement = st.text_input(
+            "Arrangement (roles, comma-separated)", value=default_arr, key="ly_arrangement",
+        )
+        roles = [r.strip().lower() for r in arrangement.split(",") if r.strip()]
+        st.caption("roles: intro · verse · hook · chorus · bridge · pre-chorus · outro · full-song")
+        overrides = st.text_input(
+            "Per-section topic slots (role=topic; …)",
+            placeholder="verse=pain; hook=success; outro=reflection", key="ly_overrides",
+        )
+        override_map = {}
+        for part in overrides.split(";"):
+            if "=" in part:
+                r, t = part.split("=", 1)
+                override_map[r.strip().lower()] = t.strip()
+
+    # ---------------- weights + negatives (features #28/#29) ---------------- #
+    with st.expander("⚖️ Prompt weights & negatives"):
+        w1, w2, w3 = st.columns(3)
+        w_topic = w1.slider("topic weight", 0.0, 2.0, 1.0, 0.1, key="ly_w_topic")
+        w_mood = w2.slider("mood weight", 0.0, 2.0, 1.0, 0.1, key="ly_w_mood")
+        w_flow = w3.slider("flow weight", 0.0, 2.0, 1.0, 0.1, key="ly_w_flow")
+        w_adlibs = st.slider("ad-lib weight", 0.0, 2.0, 0.6, 0.1, key="ly_w_adlibs")
+        neg_text = st.text_input(
+            "Negative (banned words/topics, comma-separated)", value="", key="ly_neg",
+        )
+
+    # ---------------- generate ---------------- #
+    seed = st.number_input("Seed", 0, 10**6, int(st.session_state.get("ly_seed", 42)), key="ly_seed")
+    weights = {"topic": w_topic, "mood": w_mood, "flow": w_flow, "ad_libs": w_adlibs}
+    negatives = [n.strip() for n in neg_text.split(",") if n.strip()]
+    negatives += prefs.negatives(ROOT)
+
+    artist_id = (A.get_artist(artist) or A.ARTISTS[0]).id
+    ctx = _ly_ctx(rec, artist_id, mood if mood != "(auto)" else "dark",
+                  topic or (g.topics[0] if g else "struggle"), seed, roles, negatives, weights)
+    # apply per-section topic slots (feature #2)
+    if override_map:
+        ctx.structure = [
+            L.SectionSpec(role=s.role, bars=s.bars,
+                          topic=override_map.get(s.role, ""))
+            for s in ctx.structure
+        ]
+
+    gcol1, gcol2 = st.columns([3, 1])
+    if gcol1.button("✍️ Write lyrics", type="primary", key="ly_generate", width="stretch"):
+        result = L.generate(ctx)
+        st.session_state["ly_result"] = result
+        st.session_state["ly_ctx"] = ctx
+        prefs.record_history(ROOT, result.as_dict())
+        _log_line(f"lyrics: {result.artist} {int(result.bpm)}bpm {result.mood}/{result.topic} seed={result.seed}")
+
+    if gcol2.button("🎲 Re-roll", key="ly_reroll", width="stretch"):
+        ctx.seed = seed + int(time.time()) % 97
+        st.session_state["ly_result"] = L.generate(ctx)
+        st.session_state["ly_ctx"] = ctx
+
+    result = st.session_state.get("ly_result")
+
+    # ---------------- refinement (features #39/#40/#41) ---------------- #
+    if result is not None:
+        r1, r2, r3 = st.columns(3)
+        sec_role = r1.selectbox(
+            "Regenerate section", ["(none)"] + [s["role"] for s in result.sections], key="ly_resec",
+        )
+        if r1.button("🔁 Regen section", key="ly_resec_btn", width="stretch") and sec_role != "(none)":
+            ctx = st.session_state.get("ly_ctx") or ctx
+            new_sec = L.regenerate_section(ctx, sec_role, seed=seed + 1)
+            for s in st.session_state["ly_result"].sections:
+                if s["role"] == sec_role:
+                    s.update(new_sec)
+            st.rerun()
+
+        restyle_to = r2.selectbox("Style transfer", A.artist_names(), key="ly_restyle")
+        if r2.button("🎨 Restyle", key="ly_restyle_btn", width="stretch"):
+            target = A.get_artist(restyle_to)
+            if target and target.id != result.artist.lower():
+                st.session_state["ly_result"] = L.restyle(result, target.id, seed=seed)
+                st.rerun()
+
+        if r3.button("⭐ Save favorite", key="ly_fav_btn", width="stretch"):
+            prefs.add_favorite(ROOT, f"{result.artist}-{result.mood}-{seed}", {
+                "artist": result.artist, "mood": result.mood, "topic": result.topic,
+                "seed": seed,
+            })
+            st.success("favorite saved")
+
+    # ---------------- display ---------------- #
+    if result is None:
+        _skeleton(4)
+        st.info("Write lyrics to generate a version against this beat.")
+        return
+
+    _ly_arrangement_bar(result.sections)
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.caption(f"**{result.artist}** · {result.mood} · {result.topic} · {int(result.bpm)} BPM · {result.key} · seed {result.seed} · backend {result.backend}")
+    with c2:
+        slug = f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}_{result.mood}_{result.topic}_seed{result.seed}".replace("/", "-")
+        st.download_button("⬇ .txt", result.full_text(), file_name=slug + ".txt", mime="text/plain", key="ly_dl")
+
+    for sec in result.sections:
+        with st.expander(f"[{sec['role']}] {sec['bars']} bars · {sec['flow']} @ {sec['cadence']} · {sec['topic'] or result.topic}", expanded=(sec["role"] in ("hook", "chorus"))):
+            st.markdown("\n".join(f"> {ln}" for ln in sec["lines"]))
+            if sec["ad_libs"]:
+                st.caption("ad-libs: " + ", ".join(f"({a})" for a in sec["ad_libs"]))
+
+    # ---------------- rating + style profile (features #49/#50) ---------------- #
+    st.markdown("---")
+    st.subheader("⭐ Rate it (builds your style profile)")
+    s1, s2 = st.columns([3, 1])
+    score = s1.slider("How hard does this hit?", 1, 5, 3, key="ly_rate")
+    if s2.button("Log rating", key="ly_rate_btn", width="stretch"):
+        rating.record_rating(ROOT, {
+            "item": slug, "artist": result.artist, "mood": result.mood,
+            "topic": result.topic, "genre": genre if genre != "(none)" else "",
+            "score": score / 5.0,
+        })
+        st.success("rating logged")
+
+    profile = rating.load_profile(ROOT)
+    if profile.get("n_ratings"):
+        st.caption(f"👤 {profile['n_ratings']} ratings · top artist: "
+                   f"{rating.top_preference(profile, 'artists') or '—'} · top mood: "
+                   f"{rating.top_preference(profile, 'moods') or '—'}")
+
+
+# --------------------------------------------------------------------------- #
 # ⚙️ Settings
 # --------------------------------------------------------------------------- #
 def page_settings() -> None:
@@ -2996,6 +3273,7 @@ PAGES = {
     "🏷️ Metadata": page_features,
     "✂️ Segment & Split": page_split,
     "🎛️ Generate": page_generate,
+    "🎤 Lyrics": page_lyrics,
     "🪄 Prompt builder": page_promptbuilder,
     "📏 Check BPM": page_check,
     "🎬 Visualize": page_visualize,
@@ -3020,7 +3298,7 @@ PAGES = {
 # feature 51 — collapsible nav groups
 _NAV_GROUPS = [
     ("📁 Data", ["📋 Inventory", "🔧 Normalize", "🏷️ Metadata", "✂️ Segment & Split"]),
-    ("🎛️ Generate", ["🎛️ Generate", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize"]),
+    ("🎛️ Generate", ["🎛️ Generate", "🎤 Lyrics", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize"]),
     ("🏷️ Curate", ["🏷️ Labels", "🧹 Hygiene", "🎧 Listening", "✂️ Annotate", "🧪 Campaign"]),
     ("📊 Evaluate", ["📊 Compare", "🏆 Leaderboard", "🧮 Metrics Lab", "🎯 Eval"]),
     ("🔬 Model", ["📈 Training", "🔬 Analytics", "📦 Model Ops"]),

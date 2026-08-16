@@ -26,6 +26,12 @@ VOCAB: Dict[str, Set[str]] = {
         "melancholic", "uplifting", "aggressive", "reflective", "tense",
         "epic", "mysterious", "nostalgic", "hopeful", "somber", "dreamy",
         "atmospheric",
+        # rap / beat-specific moods (feature #25 — synced with artists.MOODS)
+        "braggadocious", "gritty", "confident", "menacing", "heartbroken",
+        "anxious", "smooth", "seductive", "introspective", "triumphant",
+        "paranoid", "celebratory", "lonely", "grief", "lavish", "hustling",
+        "vengeful", "spiritual", "streetwise", "euphoric", "wounded",
+        "defiant", "cold", "toxic", "loyal", "motivated", "carefree",
     },
     "instruments": {
         "piano", "keys", "piano melody", "guitar loop", "acoustic guitar",

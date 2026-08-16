@@ -465,6 +465,263 @@ def cmd_prompt(args) -> int:
     return 0
 
 
+def cmd_artists(args) -> int:
+    from .artists import ARTISTS, GENRES, MOODS, get_artist
+
+    if args.show:
+        a = get_artist(args.show)
+        if a is None:
+            console.error(f"Unknown artist {args.show!r}. Run `musictrain artists` to list.")
+            return 1
+        console.title(f"{a.name}")
+        console.info(f"aliases:   {', '.join(a.aliases) or '-'}")
+        console.info(f"flow:      {', '.join(a.flow)}")
+        console.info(f"rhyme:     {a.rhyme_scheme}  cadence={a.cadence}  density={a.density}/5  energy={a.energy}/5")
+        console.info(f"autotune:  {a.autotune}  bpm range: {a.bpm_range[0]}-{a.bpm_range[1]}")
+        console.info(f"ad-libs:   {', '.join(a.ad_libs) or '-'}")
+        console.info(f"slang:     {', '.join(a.slang) or '-'}")
+        console.info(f"topics:    {', '.join(a.topics) or '-'}")
+        console.info(f"delivery:  {a.vibe()}")
+        return 0
+
+    if args.moods:
+        console.title(f"{len(MOODS)} moods")
+        console.info(", ".join(MOODS))
+        return 0
+
+    if args.genres:
+        console.title(f"{len(GENRES)} genre templates")
+        for g in GENRES:
+            console.info(f"{g.name:14s} {g.description}")
+        return 0
+
+    console.title(f"{len(ARTISTS)} artist style profiles")
+    for a in ARTISTS:
+        console.info(
+            f"{a.name:16s} flow={'/'.join(a.flow[:2])}  "
+            f"cadence={a.cadence:6s} ad-libs={len(a.ad_libs)}  "
+            f"topics={', '.join(a.topics[:3])}"
+        )
+    console.info("Use `musictrain artists --show <name>` for a full profile.")
+    return 0
+
+
+def _lyric_recipe(args, root) -> dict:
+    """Resolve CLI inputs (+ random/favorite) into a canonical recipe dict."""
+    from .lyricsprefs import get_favorite, normalize_recipe, random_recipe
+
+    if args.favorite and args.favorite not in ("list",):
+        fav = get_favorite(root, args.favorite)
+        if fav:
+            return dict(fav)
+        console.warn(f"favorite {args.favorite!r} not found; building from flags")
+    if args.random:
+        return random_recipe(root, seed=args.seed)
+    rec = normalize_recipe(
+        artist=args.artist or "",
+        mood=args.mood or "",
+        topic=args.topic or "",
+        genre=args.genre or "",
+        seed=args.seed,
+    )
+    return rec
+
+
+def _print_section(sec: dict) -> None:
+    console.info(f"[{sec['role']} — {sec['flow']} @ {sec['cadence']} cadence, {sec['bars']} bars]")
+    for ln in sec["lines"]:
+        print("  " + ln)
+    if sec["ad_libs"]:
+        console.info("  ad-libs: " + ", ".join(f"({a})" for a in sec["ad_libs"]))
+
+
+def cmd_lyrics(args) -> int:
+    import json as _json
+
+    from .lyrics import (BeatContext, beat_context_from_analysis, generate,
+                         regenerate_section, restyle)
+    from .lyricsprefs import (add_favorite, favorite_keys, history, history_diff,
+                              negatives, record_history, weights)
+    from .util import sanitize_slug
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+
+    # ---- non-generating modes -------------------------------------------------
+    if args.list_favorites:
+        keys = favorite_keys(root)
+        if keys:
+            console.info("Favorites: " + ", ".join(keys))
+        else:
+            console.warn("No favorites yet — use `musictrain lyrics --favorite NAME` to save one.")
+        return 0
+
+    if args.history is not None:
+        rows = history(root, limit=args.history)
+        if not rows:
+            console.warn("No lyric history yet.")
+            return 0
+        for i, h in enumerate(rows):
+            console.info(
+                f"[{i}] {h.get('artist')} | {h.get('mood')} | {h.get('topic')} "
+                f"| genre={h.get('genre') or '-'} | seed={h.get('seed')}"
+            )
+        return 0
+
+    if args.diff is not None:
+        rows = history(root)
+        try:
+            a, b = rows[-args.diff[0]], rows[-args.diff[1]]
+        except IndexError:
+            console.error(f"Only {len(rows)} history entries — indices 1..{len(rows)} (1 = most recent).")
+            return 1
+        console.title(f"lyric diff -{args.diff[0]} vs -{args.diff[1]}:")
+        for line in history_diff(a, b):
+            console.info("  " + line)
+        return 0
+
+    # ---- build the recipe + context -------------------------------------------
+    recipe = _lyric_recipe(args, root)
+    artist = recipe["artist"]
+    mood = recipe.get("mood", "")
+    topic = recipe.get("topic", "")
+    seed = int(recipe.get("seed", args.seed or 42))
+
+    if args.analysis:
+        try:
+            analysis = _json.loads(Path(args.analysis).read_text())
+        except (OSError, ValueError) as exc:
+            console.error(f"Could not read analysis {args.analysis!r}: {exc}")
+            return 1
+        ctx = beat_context_from_analysis(analysis, artist=artist, mood=mood, topic=topic, seed=seed)
+    else:
+        ctx = BeatContext(
+            bpm=float(args.bpm or recipe.get("bpm", 140.0)),
+            key=args.key or recipe.get("key", "A minor"),
+            artist=artist, mood=mood, topic=topic, seed=seed,
+        )
+
+    # apply negatives + weights (features #28/#29)
+    ctx.negative = negatives(root) + list(args.negative or [])
+    ctx.weights = dict(weights(root))
+    for w in args.weight or []:
+        if "=" in w:
+            k, v = w.split("=", 1)
+            ctx.weights[k.strip()] = float(v)
+
+    # ---- single-section regeneration (feature #40) ----------------------------
+    if args.section:
+        sec = regenerate_section(ctx, args.section, seed=seed)
+        _print_section(sec)
+        return 0
+
+    # ---- style transfer (feature #41) -----------------------------------------
+    if args.restyle:
+        from .artists import get_artist
+
+        target = get_artist(args.restyle)
+        if target is None:
+            console.error(f"Unknown artist {args.restyle!r}. Run `musictrain artists` to list.")
+            return 1
+        base_result = generate(ctx)
+        result = restyle(base_result, target.id, seed=seed)
+        console.title(f"--- restyled as {result.artist} (from {base_result.artist}) ---")
+        print(result.full_text())
+        if not args.no_save:
+            slug = sanitize_slug(
+                f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}"
+                f"_{result.mood}_{result.topic}_seed{result.seed}"
+            )
+            out_path = root / "outputs" / "lyrics" / (slug + ".txt")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(result.full_text())
+            console.ok(f"saved -> {out_path}")
+            record_history(root, result.as_dict())
+        return 0
+
+    # ---- generate N variants (seed-lock re-roll, feature #39) -----------------
+    n = max(1, int(args.variants or 1))
+    results = []
+    for i in range(n):
+        vctx = ctx
+        if i:
+            vctx = BeatContext(
+                bpm=ctx.bpm, key=ctx.key, swing=ctx.swing, energy=ctx.energy,
+                artist=ctx.artist, mood=ctx.mood, topic=ctx.topic,
+                structure=ctx.structure, negative=ctx.negative,
+                weights=ctx.weights, seed=seed + i,
+            )
+        results.append(generate(vctx))
+
+    for idx, result in enumerate(results):
+        console.title(f"--- variant {idx + 1}/{n} (seed={result.seed}, backend={result.backend}) ---")
+        print(result.full_text())
+
+        # persist + history (features #30/#48)
+        if args.out or not args.no_save:
+            slug = sanitize_slug(
+                f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}"
+                f"_{result.mood}_{result.topic}_seed{result.seed}"
+            )
+            out_path = (Path(args.out) if args.out and n == 1 else root / "outputs" / "lyrics" / (slug + ".txt"))
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(result.full_text())
+            console.ok(f"saved -> {out_path}")
+            record_history(root, result.as_dict())
+
+        if args.favorite and args.favorite != "list":
+            add_favorite(root, args.favorite, {
+                "artist": recipe["artist"], "mood": mood, "topic": topic,
+                "genre": recipe.get("genre", ""), "seed": result.seed,
+            })
+            console.ok(f"favorite saved as {args.favorite!r}")
+
+    return 0
+
+
+def cmd_lyrate(args) -> int:
+    from .lyricrating import build_profile, build_queue, ratings, record_rating
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+
+    if args.task == "record":
+        if not args.item:
+            console.error("rating record requires --item (an artist/genre/topic tag or clip id)")
+            return 1
+        record_rating(root, {
+            "item": args.item,
+            "artist": args.artist or "",
+            "mood": args.mood or "",
+            "topic": args.topic or "",
+            "genre": args.genre or "",
+            "score": args.score,
+            "choice": args.choice or "",
+        })
+        console.ok(f"recorded rating for {args.item!r} (score={args.score})")
+        return 0
+
+    if args.task == "queue":
+        items = [{"id": str(i), "label": str(i)} for i in range(max(1, int(args.n or 10)))]
+        q = build_queue(root, items, n=int(args.n or 10), seed=args.seed or 0)
+        console.title(f"blind A/B queue ({len(q)} pairs)")
+        for i, pair in enumerate(q):
+            console.info(f"pair {i}: A={pair['A']['label']}  B={pair['B']['label']}")
+        return 0
+
+    if args.task == "profile":
+        profile = build_profile(root)
+        console.title(f"style profile ({profile['n_ratings']} ratings)")
+        for dim, label in (("artists", "artists"), ("moods", "moods"), ("topics", "topics"), ("genres", "genres")):
+            top = list((profile.get(dim) or {}).items())[:5]
+            if top:
+                console.info(f"{label}: " + ", ".join(f"{k} ({v:.2f})" for k, v in top))
+        return 0
+
+    console.warn(f"ratings: {len(ratings(root))} total")
+    return 0
+
+
 def cmd_check(args) -> int:
     from .evaluate import check, check_dir
 
@@ -1470,6 +1727,65 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--energy", type=float, default=None)
     sp.add_argument("--role", default=None)
     sp.set_defaults(func=cmd_prompt)
+
+    # artists (rap/lyrics pivot — 22 style profiles, genres, moods)
+    sp = sub.add_parser(
+        "artists",
+        help="List rapper style profiles, genre templates, and moods",
+    )
+    add_common(sp)
+    sp.add_argument("--show", default=None, help="Show one artist's full profile (id/name/alias)")
+    sp.add_argument("--moods", action="store_true", help="List the expanded mood catalog")
+    sp.add_argument("--genres", action="store_true", help="List genre templates")
+    sp.set_defaults(func=cmd_artists)
+
+    # lyrics (rap/lyrics pivot — beat-driven lyric generation)
+    sp = sub.add_parser(
+        "lyrics",
+        help="Generate rapper-style lyrics from a beat analysis (or manual flags)",
+    )
+    add_common(sp)
+    sp.add_argument("--analysis", default=None, help="Path to a metadata/analysis.jsonl record (JSON file)")
+    sp.add_argument("--artist", default=None, help="Artist id/name/alias (e.g. lil-durk, Future)")
+    sp.add_argument("--mood", default=None, help="Mood (see `musictrain artists --moods`)")
+    sp.add_argument("--topic", default=None, help="Topic (e.g. pain, loyalty, success)")
+    sp.add_argument("--genre", default=None, help="Genre template to apply as defaults")
+    sp.add_argument("--bpm", type=float, default=None, help="BPM override (ignored with --analysis)")
+    sp.add_argument("--key", default=None, help="Key override, e.g. 'A minor' (ignored with --analysis)")
+    sp.add_argument("--seed", type=int, default=None, help="Deterministic seed")
+    sp.add_argument("--section", default=None, help="Regenerate only this section (intro/verse/hook/...)")
+    sp.add_argument("--restyle", default=None, help="Re-render the lyrics in another artist's style (id/name/alias)")
+    sp.add_argument("--variants", type=int, default=None, help="Generate N seed variants for A/B (re-roll)")
+    sp.add_argument("--random", action="store_true", help="Assemble a surprise-me recipe")
+    sp.add_argument("--negative", action="append", default=None, help="Banned word/topic (repeatable)")
+    sp.add_argument("--weight", action="append", default=None, help="Prompt weight key=value (repeatable)")
+    sp.add_argument("--favorite", default=None, help="Save current recipe as a named favorite")
+    sp.add_argument("--list-favorites", action="store_true", help="List saved favorites")
+    sp.add_argument("--history", type=int, default=None, help="Show the last N generations")
+    sp.add_argument("--diff", type=int, nargs=2, default=None, metavar=("IDX", "IDX"),
+                    help="Diff two history entries by recency (1 = most recent)")
+    sp.add_argument("--out", default=None, help="Output file (default: auto-named under outputs/lyrics/)")
+    sp.add_argument("--no-save", action="store_true", help="Don't write output or history")
+    sp.set_defaults(func=cmd_lyrics)
+
+    # lyrate (rap/lyrics pivot — rating queue + style profile)
+    sp = sub.add_parser(
+        "lyrate",
+        help="Rate lyrics to build a personal style profile",
+    )
+    add_common(sp)
+    sp.add_argument("--task", default="profile", choices=["record", "queue", "profile"],
+                    help="record: log a rating; queue: blind A/B queue; profile: show taste profile")
+    sp.add_argument("--item", default="", help="Item id/tag being rated (record)")
+    sp.add_argument("--artist", default="", help="Artist tag (record)")
+    sp.add_argument("--mood", default="", help="Mood tag (record)")
+    sp.add_argument("--topic", default="", help="Topic tag (record)")
+    sp.add_argument("--genre", default="", help="Genre tag (record)")
+    sp.add_argument("--score", type=float, default=0.5, help="Rating score 0..1 or MOS (record)")
+    sp.add_argument("--choice", default="", help="X|Y|tie (record)")
+    sp.add_argument("--n", type=int, default=10, help="Queue length (queue)")
+    sp.add_argument("--seed", type=int, default=0, help="Shuffle seed (queue)")
+    sp.set_defaults(func=cmd_lyrate)
 
     # check
     sp = sub.add_parser("check", help="Detect BPM drift of generated audio")

@@ -175,6 +175,18 @@ _RHYME_BANKS: Dict[str, List[str]] = {
     "in": ["villain", "captain", "mountain", "fountain", "satin", "cousin", "ribbon"],
     "ition": ["condition", "position", "ambition", "tradition", "addition", "mission",
               "vision", "edition", "decision", "revision"],
+    "oke": ["broke", "smoke", "joke", "stroke", "choke", "yoke", "coke", "folk", "oak", "bloke"],
+    "ell": ["bell", "tell", "fell", "well", "shell", "spell", "smell", "cell", "farewell"],
+    "ash": ["cash", "flash", "stash", "dash", "crash", "splash", "trash", "smash"],
+    "aze": ["maze", "blaze", "phase", "craze", "haze", "raise", "praise", "gaze"],
+    "oom": ["room", "boom", "zoom", "groom", "bloom", "doom", "tomb", "broom", "gloom"],
+    "ine": ["shine", "line", "mine", "sign", "time", "crime", "prime", "climb", "grind", "design"],
+    "one": ["bone", "stone", "throne", "phone", "zone", "cone", "clone", "tone"],
+    "it": ["fit", "hit", "lit", "spit", "split", "kit", "pit", "grit", "wit"],
+    "eat": ["heat", "beat", "seat", "treat", "street", "meat", "repeat", "defeat", "retreat"],
+    "et": ["jet", "set", "bet", "sweat", "debt", "vet", "threat", "reset"],
+    "ove": ["love", "glove", "dove", "shove"],
+    "ale": ["scale", "sale", "tale", "jail", "nail", "mail", "trail", "whale", "grail"],
 }
 
 _LINE_TEMPLATES: List[str] = [
@@ -222,6 +234,22 @@ _LINE_TEMPLATES: List[str] = [
     "I done seen it all, from the bottom to the {R}",
     "Can't knock the hustle, I was born for the {R}",
     "They sleep on the {R}, I been awake through the {R}",
+    # extended set — more shapes, less repetition across a long verse
+    "I been grindin' in the {R}, now they see the {R}",
+    "I don't chase the {R}, the {R} come to me",
+    "They said I changed, I just changed the {R}",
+    "I been through the {R}, came out with the {R}",
+    "Talk is cheap, I let the {R} do the talkin'",
+    "Pressure make diamonds, I been shinin' through the {R}",
+    "They sleep on me now, they gon' wake up to the {R}",
+    "I ain't gotta prove nothin', the {R} speak for itself",
+    "Real recognize real, they can't fake the {R}",
+    "They wanted me to break, but I built from the {R}",
+    "Every loss made me tougher, that's just the {R}",
+    "I been patient with the {R}, now it's my time",
+    "I put my {R} on the line every single day",
+    "Same {R}, new day, I just level up",
+    "Whole squad in the {R}, we don't fold under pressure",
 ]
 
 # Approximate syllable count per template (with a one-syllable placeholder for
@@ -248,6 +276,14 @@ _TOPIC_LINES: Dict[str, List[str]] = {
     "anxiety": ["Anxiety on my chest, I can't catch the {R}", "My mind racin', I can't sleep through the {R}"],
     "confidence": ["I'm the one they doubt, but I already know the {R}", "Ain't nobody stoppin' me, I'm built for the {R}"],
     "violence": ["This {R} in the streets, it'll take your {R}", "Keep your head on a swivel, it's {R} in the {R}"],
+    "money": ["I'm married to the {R}, I can't get enough", "They talk behind my back 'cause I'm makin' the {R}"],
+    "grind": ["I was built in the {R}, that's where I found my {R}", "No sleep, just the {R}, I been on my {R}"],
+    "respect": ["I earned the {R}, they can't take that away", "Give me my {R}, I done paid my dues"],
+    "come-up": ["This the {R} I been prayin' for", "I seen the {R} comin' before they did"],
+    "party": ["It's a {R} every night, I can't slow down", "We turn the {R} up, can't nobody stop us"],
+    "rage": ["I got {R} in my veins, I can't calm down", "This {R} buildin' up, I'ma let it out"],
+    "freedom": ["I been chasin' the {R} my whole life", "Can't cage the {R}, I was born to be free"],
+    "boss": ["I'm the {R} now, I answer to nobody", "They used to run the {R}, now I run the {R}"],
 }
 
 _MOOD_PREFIX: Dict[str, str] = {
@@ -374,6 +410,16 @@ def _ucfirst(s: str) -> str:
     return s[:1].upper() + s[1:] if s else s
 
 
+def _join_prefix(prefix: str, line: str) -> str:
+    """Join a mood prefix onto a line mid-sentence ("In the dark, they talk…"),
+    keeping the pronoun "I" capitalized and avoiding double prefixes."""
+    if not prefix or line.startswith(prefix):
+        return line
+    if line[0] == "I":
+        return prefix + line
+    return prefix + line[0].lower() + line[1:]
+
+
 def _topic_leads(topic: str, mood: str, rng: random.Random) -> List[str]:
     """Return themed lead line templates (topic keyword matched), else generic."""
     t = (topic or "").lower()
@@ -414,6 +460,13 @@ _TOPIC_NOUNS: Dict[str, List[str]] = {
     "envy": ["envy", "hate", "jealousy", "snakes"],
     "greed": ["greed", "lust", "envy", "snakes"],
     "money": ["money", "racks", "cash", "bags"],
+    "grind": ["grind", "hustle", "work", "mission"],
+    "respect": ["respect", "props", "love", "credit"],
+    "come-up": ["come-up", "moment", "break", "shot"],
+    "party": ["party", "club", "vibe", "motion"],
+    "rage": ["rage", "anger", "fire", "fury"],
+    "freedom": ["freedom", "light", "peace", "dreams"],
+    "boss": ["boss", "show", "game", "block"],
 }
 
 
@@ -505,17 +558,10 @@ def _generate_section(
         if role in ("hook", "chorus") and i == 0 and topic_leads:
             tmpl = topic_leads[0]
             lead = _render_line(tmpl, _topic_fill(topic, rng))
-            line = prefix + lead if prefix else lead
+            line = _join_prefix(prefix, lead)
         elif i == 0 and topic_leads:
             tmpl = topic_leads[i % len(topic_leads)]
-            line = _render_line(tmpl, _topic_fill(topic, rng))
-            if prefix and not line.startswith(prefix):
-                # lowercase the first char to join mid-sentence, but keep the
-                # pronoun "I" capitalized
-                if line[0] == "I":
-                    line = prefix + line
-                else:
-                    line = prefix + line[0].lower() + line[1:]
+            line = _join_prefix(prefix, _render_line(tmpl, _topic_fill(topic, rng)))
         else:
             tmpl = _pick_template_near(target, rng, recent=recent_templates)
             line = _render_line(tmpl, pair)

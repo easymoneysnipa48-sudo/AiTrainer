@@ -80,3 +80,33 @@ def test_generate_still_deterministic_and_structured():
     roles = [s["role"] for s in a.sections]
     assert roles[0] == "intro" and roles[-1] == "outro"
     assert all(s["lines"] for s in a.sections)
+
+
+# --------------------------------------------------------------------------- #
+# Expanded content library
+# --------------------------------------------------------------------------- #
+def test_new_rhyme_banks_present():
+    for bank in ("oke", "ell", "ash", "aze", "oom", "ine", "one", "it", "eat", "et", "ove", "ale"):
+        assert lyrics._RHYME_BANKS[bank], f"bank {bank!r} missing"
+
+
+def test_new_templates_present():
+    for t in ("I don't chase the {R}, the {R} come to me",
+              "They said I changed, I just changed the {R}",
+              "Talk is cheap, I let the {R} do the talkin'"):
+        assert t in lyrics._LINE_TEMPLATES
+
+
+def test_new_topics_have_lead_lines_and_nouns():
+    for topic in ("money", "grind", "respect", "come-up", "party", "rage", "freedom", "boss"):
+        assert lyrics._TOPIC_LINES[topic], f"topic {topic!r} missing lead lines"
+        assert lyrics._TOPIC_NOUNS[topic], f"topic {topic!r} missing anchor nouns"
+
+
+def test_new_topic_generates_coherent_opener():
+    for topic, nouns in (("boss", ("boss", "show", "game", "block")),
+                         ("money", ("money", "racks", "cash", "bags")),
+                         ("party", ("party", "club", "vibe", "motion"))):
+        r = lyrics.generate(lyrics.BeatContext(artist="future", mood="dark", topic=topic, seed=7))
+        first = r.sections[0]["lines"][0].lower()
+        assert any(w in first for w in nouns), f"{topic!r} opener {first!r} off-topic"

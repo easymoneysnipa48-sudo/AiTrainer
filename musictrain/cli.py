@@ -48,6 +48,20 @@ def cmd_config(args) -> int:
     import yaml
 
     cfg = _build_config(args)
+    if getattr(args, "migrate", False):
+        from .config import migrate_config
+
+        target = Path(args.config) if getattr(args, "config", None) else (
+            cfg.project_root / "configs" / "default.yaml"
+        )
+        out = migrate_config(target, backup=not args.no_backup)
+        if out.get("error"):
+            console.error(out["error"])
+            return 1
+        console.ok(f"Migrated config -> {target}")
+        for change in out.get("changes", []):
+            console.info("  " + change)
+        return 0
     print(yaml.safe_dump(cfg.to_dict(), sort_keys=False))
     return 0
 
@@ -1165,6 +1179,57 @@ def cmd_alert(args) -> int:
     return 0
 
 
+def cmd_warm_cache(args) -> int:
+    from .cache_warm import warm
+
+    cfg = _build_config(args)
+    out = warm(cfg, model_name=args.model or None)
+    if out.get("warmed"):
+        console.ok(f"Cache warm: {out['model']} ({out.get('cached_bytes')} bytes cached)")
+    return 0 if out.get("warmed") else 1
+
+
+def cmd_dataversion(args) -> int:
+    from . import dataversion as dv
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+    if args.task == "commit":
+        return 0 if dv.commit(root, which=args.which, label=args.label or "") else 1
+    if args.task == "list":
+        for v in dv.load_versions(root):
+            console.info(f"{v['name']:6s} {v['label']:20s} {v['n_files']} file(s) @ {v['at'][:19]}")
+        return 0
+    if args.task == "diff":
+        return 0 if dv.diff(root, args.v1, args.v2) else 1
+    if args.task == "rollback":
+        return 0 if dv.rollback(root, args.version) else 1
+    console.error(f"Unknown dataversion task {args.task!r}")
+    return 1
+
+
+def cmd_campaign(args) -> int:
+    from . import listening_campaign as lc
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+    if args.task == "start":
+        out = lc.start(root, args.name, mode=args.mode, seed=args.seed, limit=args.limit)
+        return 0 if out.get("n_items") else 1
+    if args.task == "record":
+        return 0 if lc.record(root, args.name, args.rater, args.item, args.choice,
+                              rating=args.rating, note=args.note or "") else 1
+    if args.task == "agreement":
+        a = lc.agreement(root, args.name)
+        console.ok(json.dumps(a, indent=2))
+        return 0
+    if args.task == "unblind":
+        console.ok(json.dumps(lc.unblind(root, args.name), indent=2))
+        return 0
+    console.error(f"Unknown campaign task {args.task!r}")
+    return 1
+
+
 def cmd_backup(args) -> int:
     from .backup import run
 
@@ -1250,6 +1315,9 @@ def build_parser() -> argparse.ArgumentParser:
     # config
     sp = sub.add_parser("config", help="Print the effective configuration")
     add_common(sp)
+    sp.add_argument("--migrate", action="store_true",
+                    help="Upgrade an old config schema in place (renames + backfill defaults) (#19)")
+    sp.add_argument("--no-backup", action="store_true", help="Skip the .bak backup before migrating")
     sp.set_defaults(func=cmd_config)
 
     # normalize
@@ -1893,6 +1961,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--token", default="", help="Optional bearer token to protect the API")
     sp.set_defaults(func=cmd_serve)
 
+    # warm-cache (#13)
+    sp = sub.add_parser("warm-cache", help="Pre-pull the HF model weights into the local cache (#13)")
+    add_common(sp)
+    sp.add_argument("--model", default=None, help="Model id (default: cfg.inference.model_name)")
+    sp.set_defaults(func=cmd_warm_cache)
+
     # register (MLflow registry)
     sp = sub.add_parser("register", help="Register a checkpoint in the MLflow model registry")
     add_common(sp)
@@ -1980,6 +2054,32 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", help="Overwrite existing files (restore)")
     sp.add_argument("--no-mlflow", action="store_true", help="Exclude local MLflow state (snapshot)")
     sp.set_defaults(func=cmd_backup)
+
+    # dataversion (gap #14 — DVC-style content-addressed dataset versioning)
+    sp = sub.add_parser("dataversion", help="Content-addressed dataset versioning: commit/diff/rollback/list")
+    add_common(sp)
+    sp.add_argument("--task", required=True, choices=["commit", "diff", "rollback", "list"])
+    sp.add_argument("--which", default="clean", help="data/<dir> to version (commit)")
+    sp.add_argument("--label", default="", help="Version label (commit)")
+    sp.add_argument("--v1", default="", help="First version ref (diff)")
+    sp.add_argument("--v2", default="", help="Second version ref (diff)")
+    sp.add_argument("--version", default="", help="Version ref to restore (rollback)")
+    sp.set_defaults(func=cmd_dataversion)
+
+    # campaign (gap #7 — blind listening campaigns)
+    sp = sub.add_parser("campaign", help="Blind listening campaigns: start/record/agreement/unblind")
+    add_common(sp)
+    sp.add_argument("--task", required=True, choices=["start", "record", "agreement", "unblind"])
+    sp.add_argument("--name", default="campaign1", help="Campaign name")
+    sp.add_argument("--mode", default="ab", choices=["ab", "mos"], help="Campaign mode (start)")
+    sp.add_argument("--seed", type=int, default=0, help="Shuffle seed (start)")
+    sp.add_argument("--limit", type=int, default=0, help="Item limit (start)")
+    sp.add_argument("--rater", default="rater1", help="Rater id (record)")
+    sp.add_argument("--item", default="", help="Item id (record)")
+    sp.add_argument("--choice", default="", help="X | Y | tie (record)")
+    sp.add_argument("--rating", type=int, default=None, help="1-5 MOS score (record)")
+    sp.add_argument("--note", default="", help="Optional note (record)")
+    sp.set_defaults(func=cmd_campaign)
 
     # audioext (gap #20-#24)
     sp = sub.add_parser(

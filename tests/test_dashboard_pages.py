@@ -16,7 +16,8 @@ PAGES = [
     "🎛️ Generate", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize",
     "🏷️ Labels", "📊 Compare", "🧹 Hygiene", "🏆 Leaderboard",
     "📈 Training", "🔬 Analytics", "🧮 Metrics Lab", "🎯 Eval",
-    "🎧 Listening", "📦 Model Ops", "📡 Ops & Alerts", "🪵 Logs",
+    "🎧 Listening", "✂️ Annotate", "🧪 Campaign",
+    "📦 Model Ops", "📡 Ops & Alerts", "🪵 Logs",
 ]
 
 

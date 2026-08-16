@@ -37,7 +37,22 @@ def resolve_device(preferred: str) -> str:
             return "cuda"
         if torch.backends.mps.is_available():
             return "mps"
+    console.warn(
+        f"Requested device {preferred!r} unavailable — falling back to CPU "
+        "(graceful fallback chain #17)"
+    )
     return "cpu"
+
+
+def device_chain(preferred: str) -> List[str]:
+    """Ordered device fallback chain for #17: preferred → auto → cpu."""
+    chain: List[str] = []
+    for cand in (preferred, "auto"):
+        if cand and cand not in chain:
+            chain.append(cand)
+    if "cpu" not in chain:
+        chain.append("cpu")
+    return chain
 
 
 def load_model(cfg: InferenceCfg) -> Tuple:

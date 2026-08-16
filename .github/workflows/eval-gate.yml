@@ -53,3 +53,8 @@ jobs:
 
       - name: Run FAD + per-genre quality gates
         run: python .github/scripts/run_quality_gates.py
+
+      # #13 — best-effort HF cache warm-up. No-op on hosted runners (no HF access),
+      # pre-pulls weights on self-hosted runners with a persistent HF_HOME.
+      - name: Warm HF cache (best-effort)
+        run: python -m musictrain.cli warm-cache || true

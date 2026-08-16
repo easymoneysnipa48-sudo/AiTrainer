@@ -6,6 +6,8 @@ stay the primary interfaces, this is the automation surface.
 
 * Jobs run on a background thread pool; ``POST /eval`` returns immediately with
   a ``job_id``, ``GET /jobs/{id}`` reports progress/result.
+* The queue persists job records to ``metadata/jobs/*.json`` (gap #11) so a
+  restart keeps job history; in-flight jobs are marked ``interrupted``.
 * FastAPI + uvicorn are optional dependencies — the module imports lazily and
   prints install instructions if missing.
 
@@ -13,8 +15,10 @@ Run with:  ``musictrain serve --port 8000``
 """
 from __future__ import annotations
 
+import json
 import threading
 import uuid
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from . import console
@@ -22,20 +26,56 @@ from .config import Config
 
 
 # --------------------------------------------------------------------------- #
-# Job queue (#42)
+# Job queue (#42) with persistence (#11)
 # --------------------------------------------------------------------------- #
 class JobQueue:
-    """Minimal thread-based job queue with progress + result capture."""
+    """Thread-based job queue with progress + result capture and disk persistence.
 
-    def __init__(self) -> None:
+    ``root`` enables persistence (job records under ``<root>/metadata/jobs/``).
+    ``None`` keeps the queue purely in memory (default, used in tests).
+    """
+
+    def __init__(self, root: Optional[Path] = None) -> None:
         self._jobs: Dict[str, dict] = {}
         self._lock = threading.Lock()
+        self._dir = Path(root) / "metadata" / "jobs" if root else None
+        self._restore()
 
+    # -- persistence ---------------------------------------------------- #
+    def _path(self, job_id: str) -> Optional[Path]:
+        return self._dir / f"{job_id}.json" if self._dir else None
+
+    def _persist(self, job: dict) -> None:
+        p = self._path(job["id"])
+        if p is None:
+            return
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(job, default=str))
+        except OSError:  # noqa: BLE001 - persistence must never break the job
+            pass
+
+    def _restore(self) -> None:
+        if self._dir is None or not self._dir.exists():
+            return
+        for p in sorted(self._dir.glob("*.json")):
+            try:
+                job = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if job.get("status") in ("queued", "running", "cancelling"):
+                job["status"] = "interrupted"
+                job["error"] = "server restarted while job was in flight"
+            self._jobs[job["id"]] = job
+
+    # -- job lifecycle -------------------------------------------------- #
     def submit(self, fn: Callable, *args, **kwargs) -> str:
         job_id = uuid.uuid4().hex[:12]
+        job = {"id": job_id, "status": "queued", "progress": 0.0,
+               "message": "", "result": None, "error": None}
         with self._lock:
-            self._jobs[job_id] = {"id": job_id, "status": "queued", "progress": 0.0,
-                                  "message": "", "result": None, "error": None}
+            self._jobs[job_id] = job
+        self._persist(job)
         t = threading.Thread(target=self._run, args=(job_id, fn, args, kwargs), daemon=True)
         t.start()
         return job_id
@@ -58,6 +98,7 @@ class JobQueue:
         with self._lock:
             if job_id in self._jobs:
                 self._jobs[job_id].update(fields)
+        self._persist(self._jobs[job_id])
 
     def status(self, job_id: str) -> Optional[str]:
         with self._lock:
@@ -74,6 +115,7 @@ class JobQueue:
             job = self._jobs.get(job_id)
             if job and job["status"] == "running":
                 job["status"] = "cancelling"
+                self._persist(job)
                 return True
             return False
 
@@ -110,6 +152,7 @@ def create_app(cfg: Config, require_token: Optional[str] = None):
         raise
 
     app = FastAPI(title="musictrain API", version="1.0")
+    queue = JobQueue(cfg.project_root)  # persistent job queue (#11)
 
     # -- optional bearer-token auth (#17) -------------------------------- #
     if require_token:
@@ -136,7 +179,7 @@ def create_app(cfg: Config, require_token: Optional[str] = None):
 
     @app.get("/health/live")
     def health_live():
-        return {"status": "alive", "jobs": len(QUEUE._jobs)}
+        return {"status": "alive", "jobs": len(queue._jobs)}
 
     @app.get("/ready")
     def ready():
@@ -152,18 +195,38 @@ def create_app(cfg: Config, require_token: Optional[str] = None):
 
     @app.post("/generate/stream")
     def generate_stream(req: GenerateRequest):
-        """Chunked audio generation — yields the prompt as it is processed."""
+        """NDJSON progress events while a clip is generated (progress surface)."""
         from .inference import generate
 
         def gen():
             yield b"{\"event\": \"start\"}\n"
             try:
                 out = generate(cfg, req.prompt, seed=req.seed)
-                yield b"{\"event\": \"done\", \"path\": %b}\n" % str(out).encode()
+                yield (json.dumps({"event": "done", "path": out["path"],
+                                  "duration": out.get("duration")}) + "\n").encode()
             except Exception as exc:  # noqa: BLE001
-                yield b"{\"event\": \"error\", \"message\": %b}\n" % str(exc).encode()
+                yield (json.dumps({"event": "error", "message": str(exc)}) + "\n").encode()
 
         return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+    @app.post("/generate/stream-audio")
+    def generate_stream_audio(req: GenerateRequest):
+        """Real audio streaming (#10) — generates, then streams the WAV bytes in
+        chunks so clients can begin buffering/playing before the response ends."""
+        from .inference import generate
+
+        def gen():
+            out = generate(cfg, req.prompt, seed=req.seed)
+            path = Path(out["path"])
+            with path.open("rb") as fh:
+                while True:
+                    chunk = fh.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+
+        return StreamingResponse(gen(), media_type="audio/wav",
+                                 headers={"Content-Disposition": "attachment"})
 
     @app.get("/audio/{filename}")
     def audio(filename: str):
@@ -202,7 +265,7 @@ def create_app(cfg: Config, require_token: Optional[str] = None):
                 progress=progress, cancel=cancel,
             )
 
-        return {"job_id": QUEUE.submit(run)}
+        return {"job_id": queue.submit(run)}
 
     @app.post("/generate")
     def start_generate(req: GenerateRequest):
@@ -211,24 +274,31 @@ def create_app(cfg: Config, require_token: Optional[str] = None):
         def run(progress=None, cancel=None):
             return generate(cfg, req.prompt, seed=req.seed)
 
-        return {"job_id": QUEUE.submit(run)}
+        return {"job_id": queue.submit(run)}
 
     @app.get("/jobs")
     def jobs():
-        return {"jobs": QUEUE.list()}
+        return {"jobs": queue.list()}
 
     @app.get("/jobs/{job_id}")
     def job(job_id: str):
-        j = QUEUE.get(job_id)
+        j = queue.get(job_id)
         if j is None:
             raise HTTPException(status_code=404, detail="job not found")
         return j
 
     @app.post("/jobs/{job_id}/cancel")
     def cancel(job_id: str):
-        if not QUEUE.cancel(job_id):
+        if not queue.cancel(job_id):
             raise HTTPException(status_code=400, detail="job not running")
         return {"status": "cancelling"}
+
+    @app.post("/cache/warm")
+    def warm_cache():
+        """Pre-pull the HF model weights (#13) so first generation is fast."""
+        from .cache_warm import warm
+
+        return warm(cfg)
 
     return app
 

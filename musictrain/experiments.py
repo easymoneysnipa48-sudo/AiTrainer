@@ -35,7 +35,13 @@ def _configure(cfg: Config):
     if ml is None:
         return None
     ml.set_tracking_uri(_uri(cfg))
-    ml.set_experiment(cfg.mlflow.experiment_name)
+    try:
+        from .retry import is_transient, retry
+
+        retry(ml.set_experiment, cfg.mlflow.experiment_name,
+              retries=2, retryable=is_transient)
+    except Exception as exc:  # noqa: BLE001
+        console.warn(f"MLflow set_experiment failed: {exc}")
     return ml
 
 

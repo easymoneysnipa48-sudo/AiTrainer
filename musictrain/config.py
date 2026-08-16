@@ -247,6 +247,51 @@ class Config:
         path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False))
 
 
+# Known old-schema field renames, applied by ``migrate_config`` (#19).
+_RENAMES: Dict[str, Dict[str, str]] = {
+    "normalize": {"sr": "sample_rate"},
+    "inference": {"max_tokens": "max_new_tokens", "model": "model_name"},
+    "segment": {"segment_len": "segment_seconds"},
+    "check": {"tolerance": "bpm_tolerance"},
+}
+
+
+def migrate_config(path: Path, backup: bool = True) -> dict:
+    """Upgrade an old YAML schema in place (#19): rename legacy fields and
+    re-serialize with all current defaults so every key is present going
+    forward. Returns the list of renames applied."""
+    import shutil
+
+    path = Path(path)
+    data: dict = {}
+    if path.exists():
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+        except yaml.YAMLError as exc:
+            return {"changes": [], "error": f"unparseable YAML: {exc}"}
+    if not isinstance(data, dict):
+        data = {}
+
+    changes: List[str] = []
+    for section, renames in _RENAMES.items():
+        sub = data.get(section)
+        if isinstance(sub, dict):
+            for old, new in renames.items():
+                if old in sub and new not in sub:
+                    sub[new] = sub.pop(old)
+                    changes.append(f"{section}.{old} -> {section}.{new}")
+
+    if backup and path.exists():
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+
+    cfg = Config.from_dict(data)
+    out_data = cfg.to_dict()
+    out_data.pop("project_root", None)  # never persist a machine-specific path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(out_data, sort_keys=False))
+    return {"changes": changes, "path": str(path)}
+
+
 def _coerce(ftype: Any, value: Any) -> Any:
     """Coerce a raw dict value into the dataclass type (recursively)."""
     origin = get_origin(ftype)

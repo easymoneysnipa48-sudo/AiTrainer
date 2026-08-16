@@ -1,0 +1,51 @@
+# musictrain — local orchestration of the three services (#12).
+#
+#   docker compose up --build
+#
+#   MLflow     -> http://localhost:5000
+#   API        -> http://localhost:8000/docs
+#   Dashboard  -> http://localhost:8501
+#
+# The HF model cache and the project root are shared across services so the
+# dashboard/API see the same data and only pay the model download once (#13).
+services:
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.19.0
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /mlflow/backend --artifacts-destination /mlflow/artifacts
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+
+  api:
+    build: .
+    command: serve --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - HF_HOME=/cache/huggingface
+    volumes:
+      - ./:/work
+      - hf-cache:/cache/huggingface
+    depends_on:
+      - mlflow
+
+  dashboard:
+    build: .
+    command: dashboard --port 8501
+    ports:
+      - "8501:8501"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - HF_HOME=/cache/huggingface
+    volumes:
+      - ./:/work
+      - hf-cache:/cache/huggingface
+    depends_on:
+      - mlflow
+      - api
+
+volumes:
+  mlflow-data:
+  hf-cache:

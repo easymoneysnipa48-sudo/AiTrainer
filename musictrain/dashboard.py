@@ -296,7 +296,8 @@ _PALETTE_HTML = """
 (function () {
   var PAGES = ["📋 Inventory","🔧 Normalize","🏷️ Metadata","✂️ Segment & Split","🎛️ Generate",
     "🪄 Prompt builder","📏 Check BPM","🎬 Visualize","🏷️ Labels","📊 Compare","🧹 Hygiene",
-    "🏆 Leaderboard","📈 Training","🔬 Analytics","🎯 Eval","🎧 Listening","🪵 Logs"];
+    "🏆 Leaderboard","📈 Training","🔬 Analytics","🎯 Eval","🎧 Listening","✂️ Annotate","🧪 Campaign",
+    "🪵 Logs","🧮 Metrics Lab","📦 Model Ops","📡 Ops & Alerts"];
   var SHORTCUTS = {g:"🎛️ Generate", l:"🏆 Leaderboard", c:"📊 Compare", h:"🧹 Hygiene",
     i:"📋 Inventory", n:"🔧 Normalize", m:"🏷️ Metadata", b:"📏 Check BPM",
     t:"📈 Training", a:"🔬 Analytics", v:"🎬 Visualize", e:"🎯 Eval"};
@@ -2092,6 +2093,138 @@ def _ab_compare(rows: list, picked: list, existing: dict, ratings_path: Path) ->
 
 
 # --------------------------------------------------------------------------- #
+# ✂️ Annotate (review / trim / label) — #15
+# --------------------------------------------------------------------------- #
+def page_annotate() -> None:
+    _page_header(
+        "✂️", "Annotate",
+        "Review a clip, scrub a trim window, and save a labelled slice for curation.",
+    )
+    from musictrain.report import load_results
+
+    with st.spinner("Loading clips…"):
+        rows = load_results(ROOT)
+    candidates = [r for r in rows if r.get("audio_path") and Path(r["audio_path"]).exists()]
+    if not candidates:
+        _skeleton(3)
+        st.info("No generated clips yet — run `musictrain eval` first.")
+        return
+
+    labels = [f"{r.get('section') or '?'} · {Path(r['audio_path']).name}" for r in candidates]
+    idx = st.selectbox("Clip", range(len(candidates)), format_func=lambda i: labels[i], key="ann_clip")
+    row = candidates[idx]
+    ap = Path(row["audio_path"])
+
+    st.caption(f"**{row.get('prompt')}**")
+    _waveform_chart(str(ap), "ann_wave")
+    st.audio(str(ap))
+
+    import soundfile as sf
+
+    try:
+        info = sf.info(ap)
+        dur = float(info.duration)
+    except Exception:  # noqa: BLE001
+        dur = 0.0
+
+    c1, c2 = st.columns(2)
+    start = c1.number_input("Trim start (s)", 0.0, max(dur, 0.0), 0.0, 0.5, key="ann_start")
+    end = c2.number_input("Trim end (s)", 0.0, max(dur, 0.0), min(dur, 30.0), 0.5, key="ann_end")
+
+    label = st.text_input("Label (comma-separated tags)", value="", key="ann_label")
+
+    if st.button("💾 Save trimmed slice", type="primary", key="ann_save"):
+        if end <= start or dur <= 0:
+            st.error("Trim end must be after start and within the clip.")
+        else:
+            out_dir = ROOT / "data" / "reviewed"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{ap.stem}_trim_{start:.1f}-{end:.1f}.wav"
+            try:
+                data, fs = sf.read(ap)
+                lo = int(start * fs)
+                hi = int(end * fs)
+                sf.write(out_path, data[lo:hi], fs)
+                ann = ROOT / "metadata" / "annotations.jsonl"
+                with ann.open("a") as fh:
+                    fh.write(json.dumps({
+                        "source": str(ap), "trimmed": str(out_path),
+                        "start": start, "end": end, "label": label,
+                        "prompt": row.get("prompt"),
+                    }) + "\n")
+                st.success(f"Saved {out_path.name} -> data/reviewed/")
+                st.audio(str(out_path))
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Trim failed: {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# 🎧 Listening campaign — #7
+# --------------------------------------------------------------------------- #
+def page_campaign() -> None:
+    _page_header(
+        "🧪", "Listening campaign",
+        "Blind A/B or MOS listening with persisted sessions and rater agreement.",
+    )
+    from musictrain import listening_campaign as lc
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    name = c1.text_input("Campaign name", value="campaign1", key="camp_name")
+    mode = c2.selectbox("Mode", ["ab", "mos"], key="camp_mode")
+    seed = c3.number_input("Seed", 0, 9999, 0, key="camp_seed")
+
+    if st.button("🆕 Create campaign", key="camp_create"):
+        out = lc.start(ROOT, name, mode=mode, seed=seed)
+        if out.get("n_items"):
+            st.success(f"Created {name!r} with {out['n_items']} item(s).")
+        else:
+            st.error(str(out))
+
+    camp = lc.load_campaign(ROOT, name)
+    if not camp:
+        _skeleton(3)
+        st.info("Create a campaign (needs prior eval results) to begin rating.")
+        return
+
+    st.caption(f"Campaign **{name}** ({camp['mode']}) — {camp['n_items']} item(s)")
+    rater = st.text_input("Rater id", value="rater1", key="camp_rater")
+
+    existing = {(r["rater"], r["item_id"]) for r in lc.load_ratings(ROOT, name)}
+    pending = [it for it in camp["items"] if (rater, it["id"]) not in existing]
+    if not pending:
+        st.success(f"All {camp['n_items']} item(s) rated by {rater} — thank you!")
+    else:
+        it = pending[0]
+        st.markdown(f"**Item {it['id']}** — {it.get('prompt')}")
+        with st.container(border=True):
+            if it["mode"] == "ab":
+                ca, cb = st.columns(2)
+                with ca:
+                    st.markdown("**X**")
+                    st.audio(it["x"]["audio_path"])
+                with cb:
+                    st.markdown("**Y**")
+                    st.audio(it["y"]["audio_path"])
+                choice = st.radio("Prefer", ["X", "Y", "tie"], horizontal=True, key="camp_choice")
+            else:
+                st.audio(it["clip"]["audio_path"])
+                choice = str(st.slider("MOS score", 1, 5, 3, key="camp_mos"))
+            if st.button("Save judgement", type="primary", key="camp_save_rating"):
+                rating = None if it["mode"] == "ab" else int(choice)
+                lc.record(ROOT, name, rater, it["id"], "X" if it["mode"] == "ab" else str(choice),
+                          rating=rating)
+                st.rerun()
+
+    a = lc.agreement(ROOT, name)
+    if a["n_ratings"]:
+        st.metric("Rater agreement (mean majority)", a["agreement"] if a["agreement"] is not None else "—")
+        st.caption(f"{a['n_ratings']} rating(s) · {a['n_raters']} rater(s) · {a['n_items']} item(s)")
+        if camp["mode"] == "ab":
+            with st.expander("🔓 Unblind X/Y"):
+                st.json(lc.unblind(ROOT, name))
+
+
+# --------------------------------------------------------------------------- #
 # 🪄 Prompt builder
 # --------------------------------------------------------------------------- #
 def page_promptbuilder() -> None:
@@ -2680,6 +2813,8 @@ PAGES = {
     "🧮 Metrics Lab": page_metricslab,
     "🎯 Eval": page_eval,
     "🎧 Listening": page_listening,
+    "✂️ Annotate": page_annotate,
+    "🧪 Campaign": page_campaign,
     "📦 Model Ops": page_modelops,
     "📡 Ops & Alerts": page_ops,
     "🪵 Logs": page_logs,
@@ -2690,7 +2825,7 @@ PAGES = {
 _NAV_GROUPS = [
     ("📁 Data", ["📋 Inventory", "🔧 Normalize", "🏷️ Metadata", "✂️ Segment & Split"]),
     ("🎛️ Generate", ["🎛️ Generate", "🪄 Prompt builder", "📏 Check BPM", "🎬 Visualize"]),
-    ("🏷️ Curate", ["🏷️ Labels", "🧹 Hygiene", "🎧 Listening"]),
+    ("🏷️ Curate", ["🏷️ Labels", "🧹 Hygiene", "🎧 Listening", "✂️ Annotate", "🧪 Campaign"]),
     ("📊 Evaluate", ["📊 Compare", "🏆 Leaderboard", "🧮 Metrics Lab", "🎯 Eval"]),
     ("🔬 Model", ["📈 Training", "🔬 Analytics", "📦 Model Ops"]),
     ("🪵 System", ["📡 Ops & Alerts", "🪵 Logs"]),

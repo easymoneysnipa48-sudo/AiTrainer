@@ -47,6 +47,30 @@ def _manifest(files: List[Path]) -> Dict[str, str]:
     return out
 
 
+def _mlflow_files(cfg: Config, root: Path) -> List[Path]:
+    """Local MLflow state files (sqlite db and/or artifact store) to back up."""
+    uri = (getattr(getattr(cfg, "mlflow", None), "tracking_uri", "") or "")
+    files: List[Path] = []
+    if not uri:
+        # default: local sqlite db + mlruns artifact dir
+        db = root / "mlflow.db"
+        if db.is_file():
+            files.append(db)
+        mlruns = root / "mlruns"
+        if mlruns.is_dir():
+            files += [p for p in mlruns.rglob("*") if p.is_file()]
+        return files
+    if uri.startswith("file://"):
+        p = Path(uri.replace("file://", ""))
+        if p.is_dir():
+            files += [p for p in p.rglob("*") if p.is_file()]
+    elif uri.startswith("sqlite:///"):
+        p = Path(uri.replace("sqlite:///", ""))
+        if p.is_file():
+            files.append(p)
+    return files
+
+
 def snapshot(cfg: Config, label: str = "", include_mlflow: bool = True) -> dict:
     """Create a versioned archive of project metadata (and local MLflow state)."""
     root = cfg.project_root
@@ -54,20 +78,23 @@ def snapshot(cfg: Config, label: str = "", include_mlflow: bool = True) -> dict:
     files: List[Path] = []
     if meta.is_dir():
         files += [p for p in meta.iterdir() if p.is_file() and p.suffix in (".json", ".jsonl", ".csv")]
-    config_path = root / "config.yaml"
-    if config_path.is_file():
-        files.append(config_path)
+    for cfg_path in (root / "configs" / "default.yaml", root / "config.yaml"):
+        if cfg_path.is_file():
+            files.append(cfg_path)
     for name in ("labels.csv", "vocab.json"):
-        p = root / name
-        if p.is_file():
-            files.append(p)
+        for base in (root / "metadata", root):
+            p = base / name
+            if p.is_file():
+                files.append(p)
+                break
 
-    # MLflow local artifact store (skip remote URIs)
-    mlflow_uri = getattr(cfg, "mlflow_uri", "") or ""
-    if include_mlflow and mlflow_uri.startswith("file://"):
-        mlroot = Path(mlflow_uri.replace("file://", ""))
-        if mlroot.is_dir():
-            files += [p for p in mlroot.rglob("*") if p.is_file()]
+    # MLflow local state (sqlite db / artifacts); remote tracking servers skip
+    if include_mlflow:
+        mlfiles = _mlflow_files(cfg, root)
+        if mlfiles:
+            files += mlfiles
+        else:
+            console.warn("include_mlflow requested but no local MLflow state found.")
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     stem = "musictrain" + (f"-{label}" if label else "") + f"-{ts}"

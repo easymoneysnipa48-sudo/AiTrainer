@@ -8,7 +8,6 @@ labels.csv).
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -86,10 +85,11 @@ def autolabel(root: Path, cfg: Config, which: str = "clean", limit: int = 0) -> 
         w = csv.writer(fh)
         w.writerow(["path", "genre", "genre_scores", "mood", "mood_scores", "instruments", "instruments_scores"])
         for r in results:
-            def tags(dim):
-                return "|".join(t["tag"] for t in r[dim])
-            def scores(dim):
-                return "|".join(f"{t['score']:.3f}" for t in r[dim])
+            # bind r as an argument to avoid late-binding closure (B023)
+            def tags(dim, rec=r):
+                return "|".join(t["tag"] for t in rec[dim])
+            def scores(dim, rec=r):
+                return "|".join(f"{t['score']:.3f}" for t in rec[dim])
             w.writerow([
                 r["path"],
                 tags("genre"), scores("genre"),

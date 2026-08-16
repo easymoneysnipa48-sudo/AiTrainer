@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
-from typing import List
 
 from . import console
 from .util import sha256_file

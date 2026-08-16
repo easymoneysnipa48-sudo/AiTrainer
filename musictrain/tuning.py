@@ -194,31 +194,57 @@ def resume_from(root: Path, adapters_dir: Optional[Path] = None) -> dict:
 
 
 def hpo_search(cfg: Config, metric: str = "leaderboard_score",
-               n_trials: int = 10, seed: int = 0) -> dict:
-    """Optuna-backed hyperparameter search, falling back to a seeded grid."""
+               n_trials: int = 10, seed: int = 0,
+               objective=None) -> dict:
+    """Hyperparameter search.
+
+    With optuna installed **and** an ``objective(trial) -> float`` callable,
+    runs a real study (sampler: TPE, direction: maximize) over ``n_trials``.
+    Without optuna (or without an objective — the CLI never trains implicitly)
+    it returns a deterministic seeded grid so callers get a usable plan either
+    way.
+    """
     grid = hpo_grid(
         [5e-5, 1e-4, 2e-4], [1, 2, 4], [4, 8, 16], n_trials=n_trials, seed=seed
     )
     try:
-        import optuna  # noqa: F401
+        import optuna
     except ImportError:
         console.warn("optuna not installed — using deterministic grid search fallback.")
         log.warning("optuna unavailable; grid fallback of %d candidate(s)", len(grid))
         return {"backend": "grid", "metric": metric, "trials": grid}
 
+    if objective is None:
+        study_name = f"mt-hpo-{metric}"
+        console.step(
+            f"optuna available but no objective provided — returning the study "
+            f"shape for {n_trials} trial(s) (pass an objective to run trials)"
+        )
+        return {
+            "backend": "optuna", "metric": metric, "study_name": study_name,
+            "n_trials": n_trials, "seed": seed, "suggested_grid": grid,
+            "ran_trials": False,
+        }
+
     console.step(f"optuna search over {n_trials} trial(s), objective={metric}")
-    # Real objective needs a training run; here we record the study shape and
-    # let the caller attach trials. Kept side-effect-light so the CLI never
-    # trains by accident.
-    study_name = f"mt-hpo-{metric}"
-    return {
-        "backend": "optuna",
-        "metric": metric,
-        "study_name": study_name,
-        "n_trials": n_trials,
-        "seed": seed,
-        "suggested_grid": grid,
-    }
+    try:
+        study = optuna.create_study(
+            study_name=f"mt-hpo-{metric}", direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=seed),
+        )
+        study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+        return {
+            "backend": "optuna", "metric": metric, "ran_trials": True,
+            "n_trials": len(study.trials),
+            "best_params": study.best_params,
+            "best_value": round(study.best_value, 6),
+            "suggested_grid": grid,
+        }
+    except Exception as exc:  # noqa: BLE001 - a bad objective must not crash the CLI
+        console.warn(f"optuna study failed ({exc}) — returning grid plan")
+        log.warning("optuna study failed: %s", exc)
+        return {"backend": "grid", "metric": metric, "trials": grid,
+                "error": str(exc)}
 
 
 def mlx_status() -> dict:
@@ -239,27 +265,51 @@ def mlx_status() -> dict:
 
 
 def apply_quantization(model_name: str, bits: int = 8) -> dict:
-    """Quantize a model to ``bits`` (8 or 4). Needs bitsandbytes/optimum."""
+    """Quantize a model to ``bits`` (8 or 4) via bitsandbytes.
+
+    Actually loads the model with a ``BitsAndBytesConfig`` when the deps are
+    present; otherwise returns a clear plan/note. MusicGen's custom modules
+    don't always quantize cleanly, so a failure here degrades to a plan rather
+    than raising.
+    """
     if bits not in (4, 8):
         raise ValueError("bits must be 4 or 8")
     try:
-        import torch  # noqa: F401
-        import bitsandbytes  # noqa: F401
-        import optimum  # noqa: F401
-        loaded = True
+        import torch
+        from transformers import AutoModelForTextToWaveform, BitsAndBytesConfig
     except ImportError as exc:
         log.warning("quantization deps unavailable: %s", exc)
-        loaded = False
-    return {
-        "model": model_name,
-        "bits": bits,
-        "backend": "bitsandbytes" if loaded else None,
-        "note": "" if loaded else "install bitsandbytes + optimum to quantize",
-    }
+        return {
+            "model": model_name, "bits": bits, "quantized": False,
+            "note": "install bitsandbytes + transformers to quantize",
+        }
+    try:
+        bnb = BitsAndBytesConfig(
+            load_in_8bit=(bits == 8),
+            load_in_4bit=(bits == 4),
+            bnb_4bit_compute_dtype=(torch.float16 if bits == 4 else None),
+        )
+        model = AutoModelForTextToWaveform.from_pretrained(
+            model_name, quantization_config=bnb
+        )
+        return {
+            "model": model_name, "bits": bits, "backend": "bitsandbytes",
+            "quantized": True, "n_params": sum(p.numel() for p in model.parameters()),
+        }
+    except Exception as exc:  # noqa: BLE001 - custom modules may not quantize
+        log.warning("quantization failed: %s", exc)
+        return {
+            "model": model_name, "bits": bits, "quantized": False,
+            "error": str(exc),
+            "note": "quantization unsupported for this model — see quantize_plan for a ladder",
+        }
 
 
-def extend_tokenizer(tokens: Sequence[str], out_path: Optional[Path] = None) -> dict:
-    """Register custom style tokens for the tokenizer (persists to JSON)."""
+def extend_tokenizer(tokens: Sequence[str], out_path: Optional[Path] = None,
+                     tokenizer_name: Optional[str] = None) -> dict:
+    """Register custom style tokens — persists the list to JSON, and when a
+    ``tokenizer_name`` is given (and transformers is installed), actually adds
+    the tokens to a real tokenizer and saves it to ``out_path``."""
     clean = tokenize_candidates(tokens)
     target = Path(out_path) if out_path else Path("metadata") / "custom_tokens.json"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -271,8 +321,25 @@ def extend_tokenizer(tokens: Sequence[str], out_path: Optional[Path] = None) -> 
             existing = []
     merged = sorted(set(existing) | set(clean))
     target.write_text(json.dumps(merged, indent=2))
+
+    result: dict = {"tokens": merged, "added": len(merged) - len(existing),
+                    "path": str(target), "tokenizer_extended": False}
+    if tokenizer_name:
+        try:
+            from transformers import AutoTokenizer
+
+            tok = AutoTokenizer.from_pretrained(tokenizer_name)
+            added = tok.add_tokens(merged)
+            save_dir = target.parent / "tokenizer"
+            tok.save_pretrained(save_dir)
+            result["tokenizer_extended"] = True
+            result["n_added_to_tokenizer"] = int(added)
+            result["tokenizer_path"] = str(save_dir)
+        except Exception as exc:  # noqa: BLE001 - tokenizer extension is best-effort
+            log.warning("tokenizer extension failed: %s", exc)
+            result["tokenizer_error"] = str(exc)
     console.ok(f"{len(merged)} custom token(s) -> {target}")
-    return {"tokens": merged, "added": len(merged) - len(existing), "path": str(target)}
+    return result
 
 
 def textual_inversion(concept: str, examples: Sequence[Path]) -> dict:
@@ -312,7 +379,8 @@ def run(root: Path, cfg: Config, task: str, **kwargs) -> dict:
         "quantize": lambda: apply_quantization(
             kwargs.get("model_name", cfg.inference.model_name),
             kwargs.get("bits", 8)),
-        "tokens": lambda: extend_tokenizer(kwargs.get("tokens", [])),
+        "tokens": lambda: extend_tokenizer(
+            kwargs.get("tokens", []), tokenizer_name=kwargs.get("tokenizer_name")),
         "inversion": lambda: textual_inversion(
             kwargs.get("concept", ""), kwargs.get("examples", [])),
         "plan": lambda: quantize_plan(

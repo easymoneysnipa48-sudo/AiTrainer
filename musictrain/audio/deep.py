@@ -71,7 +71,7 @@ def tempo_drift(y: np.ndarray, sr: int, hop_length: int = 512,
         verdict = "dragging"  # slowing down
 
     return {
-        "windows": [{"t": s, "bpm": round(b, 2)} for s, b in zip(starts, bpms)],
+        "windows": [{"t": s, "bpm": round(b, 2)} for s, b in zip(starts, bpms, strict=True)],
         "mean_bpm": round(mean, 2),
         "std_bpm": round(float(arr.std()), 2),
         "drift_bpm_per_sec": round(slope, 4),
@@ -188,10 +188,10 @@ def stereo_profile(path: Path) -> Optional[dict]:
     width = side_e / (mid_e + side_e + 1e-12)  # 0..1
 
     # phase correlation: normalized cross-correlation at zero lag
-    l = left - left.mean()
+    lch = left - left.mean()
     r = right - right.mean()
-    denom = (np.sqrt((l ** 2).sum()) * np.sqrt((r ** 2).sum())) + 1e-12
-    phase_corr = float((l * r).sum() / denom)
+    denom = (np.sqrt((lch ** 2).sum()) * np.sqrt((r ** 2).sum())) + 1e-12
+    phase_corr = float((lch * r).sum() / denom)
 
     mono_ok = bool(phase_corr > 0.0)
     return {

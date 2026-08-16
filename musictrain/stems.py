@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 from typing import List
 
-import numpy as np
 
 from . import console
 from .audio.inventory import AUDIO_GLOB

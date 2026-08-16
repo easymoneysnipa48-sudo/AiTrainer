@@ -54,7 +54,6 @@ def _load_bpm_map(root: Path) -> Dict[str, Optional[float]]:
 
 def detect_downbeats(y, sr: int, beats_per_bar: int = 4) -> List[float]:
     """Return downbeat timestamps (seconds) via librosa beat tracking."""
-    import librosa
 
     from .analysis import beat_grid
 

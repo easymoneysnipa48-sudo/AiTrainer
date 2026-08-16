@@ -7,13 +7,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 
 from .. import console
 from ..config import Config, QualityCfg
-from ..util import sanitize_slug
 
 AUDIO_GLOB = ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.aiff", "*.aif", "*.ogg")
 

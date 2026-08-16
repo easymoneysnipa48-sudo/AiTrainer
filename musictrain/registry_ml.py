@@ -8,7 +8,7 @@ already enforce on the metrics side.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from . import console
 from .config import Config

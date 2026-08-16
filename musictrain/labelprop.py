@@ -208,8 +208,8 @@ def leakage_check(root: Path, cfg: Config, splits: List[str] | None = None) -> D
         console.warn(
             f"⚠ {len(leaks)} cross-split near-duplicate(s) found -> metadata/leakage.json"
         )
-        for l in leaks[:10]:
-            console.warn(f"  {l['split_a']}/{l['a']} ~ {l['split_b']}/{l['b']} ({l['similarity']:.3f})")
+        for leak in leaks[:10]:
+            console.warn(f"  {leak['split_a']}/{leak['a']} ~ {leak['split_b']}/{leak['b']} ({leak['similarity']:.3f})")
     else:
         console.ok(f"No cross-split leakage across {available} (checked {len(fps)} files).")
     return report

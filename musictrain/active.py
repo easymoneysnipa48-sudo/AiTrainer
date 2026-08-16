@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 
@@ -55,7 +55,7 @@ def rank_unlabeled(
         return []
 
     from .embeddings import embed_dir, _scan
-    from .autolabel import _cos, _embed_text
+    from .autolabel import _embed_text
     from .labels import VOCAB
     from .similarity import load_clap
 

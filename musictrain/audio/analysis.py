@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .. import console
-from ..config import AnalysisCfg, Config
+from ..config import Config
 from .features import _MAJOR, _MINOR, _PC_NAMES, load_audio
 
 # --------------------------------------------------------------------------- #

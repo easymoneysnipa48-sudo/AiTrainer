@@ -7,7 +7,6 @@ legacy pytorch_model.bin format.
 """
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 from typing import List, Optional
@@ -85,23 +84,27 @@ def merge(model_dirs: List[Path], out_dir: Path, weights: Optional[List[float]] 
             else:
                 shutil.copy2(f, dst)
 
-    # average shard-by-shard (assume all checkpoints use the same shard layout)
-    for si, files in enumerate(zip(*groups)):
-        merged: dict = {}
-        first = _load_weights(files[0])
-        for key in first.keys():
-            vals = []
-            ok = True
-            for f in files:
-                t = _load_weights(f).get(key)
-                if t is None:
-                    ok = False
-                    break
-                import torch
+    # all checkpoints must share the same shard layout, else a naive
+    # element-wise average would silently drop shards (gap: zip truncation).
+    n_shards = {len(g) for g in groups}
+    if len(n_shards) != 1:
+        console.error(
+            f"Checkpoints have different shard counts {sorted(n_shards)} — "
+            "cannot merge safely. Re-export to a common shard layout first."
+        )
+        raise ValueError("mismatched shard layouts")
 
-                vals.append(t.to(torch.float32).numpy())
-            if not ok:
+    import torch
+
+    # average shard-by-shard (same layout guaranteed above)
+    for files in zip(*groups, strict=True):
+        loaded = [_load_weights(f) for f in files]
+        keys = set(loaded[0].keys())
+        merged: dict = {}
+        for key in keys:
+            if any(key not in wts for wts in loaded):
                 continue  # key missing in one checkpoint — drop it
+            vals = [wts[key].to(torch.float32).numpy() for wts in loaded]
             merged[key] = np.average(np.stack(vals, axis=0), axis=0, weights=w)
         out_file = out_dir / files[0].name
         _save_weights({k: np.asarray(v) for k, v in merged.items()}, out_file)

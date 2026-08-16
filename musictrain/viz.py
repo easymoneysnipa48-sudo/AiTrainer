@@ -262,7 +262,6 @@ def live_generation_view(outputs_dir: str, key: str) -> None:
 # --------------------------------------------------------------------------- #
 def chord_beat_strip(chords: list, beat_grid: dict, key: str) -> None:
     import matplotlib.pyplot as plt
-    import numpy as np
 
     if not chords and not beat_grid:
         st.caption("no chord / beat data")
@@ -300,7 +299,6 @@ def chord_beat_strip(chords: list, beat_grid: dict, key: str) -> None:
 def chromagram(path: str, key: str) -> None:
     import librosa
     import matplotlib.pyplot as plt
-    import numpy as np
 
     try:
         y, sr = _load_wave(path)

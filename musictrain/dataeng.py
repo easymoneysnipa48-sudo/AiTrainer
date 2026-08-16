@@ -191,7 +191,7 @@ def snapshot(root: Path, cfg: Config, label: Optional[str] = None,
     snap_dir.mkdir(parents=True, exist_ok=True)
     (snap_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     # also copy the labels + config alongside for reproducibility
-    for src in ("metadata/labels.csv", "config.yaml"):
+    for src in ("metadata/labels.csv", "configs/default.yaml", "config.yaml"):
         p = root / src
         if p.exists():
             import shutil
@@ -260,7 +260,7 @@ def tag_cooccurrence(rows: Iterable[dict],
 
     total = sum(counts.values())
     entries = [
-        {"combo": dict(zip(dims, k)), "count": c, "share": round(c / total, 4) if total else 0.0}
+        {"combo": dict(zip(dims, k, strict=True)), "count": c, "share": round(c / total, 4) if total else 0.0}
         for k, c in counts.most_common()
     ]
     # under-represented = the least common; over = the most common

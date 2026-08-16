@@ -208,6 +208,7 @@ def cmd_tuning(args) -> int:
         model_name=args.model,
         bits=args.bits,
         tokens=tokens,
+        tokenizer_name=args.tokenizer or "",
         concept=args.concept or "",
         examples=[Path(p) for p in (args.examples or [])],
         model_bytes=args.model_bytes or 0,
@@ -1579,6 +1580,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--model", default=None, help="Model name for quantize")
     sp.add_argument("--bits", type=int, default=8, choices=[4, 8], help="Quantization bits")
     sp.add_argument("--tokens", nargs="*", default=None, help="Custom style tokens to register")
+    sp.add_argument("--tokenizer", default=None, help="Tokenizer id to actually extend (e.g. facebook/musicgen-small)")
     sp.add_argument("--concept", default=None, help="Concept for textual inversion")
     sp.add_argument("--examples", nargs="*", default=None, help="Example audio for inversion")
     sp.add_argument("--model-bytes", type=int, default=0, help="Model size for grad-accum plan")

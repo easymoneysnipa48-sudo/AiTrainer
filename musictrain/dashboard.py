@@ -553,8 +553,9 @@ def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
 
     The worker thread is daemon; cancellation stops the UI wait and marks the
     job aborted (the thread finishes or is abandoned in the background). The
-    progress bar and cancel button live in one `st.empty()` slot, replaced each
-    tick, so no duplicate-widget errors occur on long jobs.
+    Cancel button is rendered once (outside the polling loop): a widget key must
+    be unique per script run, and re-rendering it each tick previously raised
+    StreamlitDuplicateElementKey.
     """
     out: dict = {}
 
@@ -570,16 +571,19 @@ def _run_job_cancellable(label: str, fn: Callable, *args, **kwargs):
     thread.start()
 
     slot = st.empty()
+    cancel_slot = st.empty()
     cancelled = False
+    # Render the Cancel button once, outside the polling loop.
+    with cancel_slot.container():
+        if st.button("⏹ Cancel", key="cancel_job_btn"):
+            cancelled = True
+
     pct = 0.0
-    while thread.is_alive():
+    while thread.is_alive() and not cancelled:
         pct = min(pct + 0.03, 0.92)
-        with slot.container():
-            st.progress(pct, text=label)
-            if st.button("⏹ Cancel", key="cancel_job_btn"):
-                cancelled = True
-                break
+        slot.progress(pct, text=label)
         time.sleep(0.12)
+    cancel_slot.empty()
     if not cancelled:
         thread.join(timeout=5)
 
@@ -639,15 +643,19 @@ def _run_live(label: str, fn: Callable, *args, progress_kw: str = "progress",
     thread.start()
 
     slot = st.empty()
-    while thread.is_alive():
+    cancel_slot = st.empty()
+    if cancel_kw:
+        # Render the Cancel button once, outside the polling loop.
+        with cancel_slot.container():
+            if st.button("⏹ Cancel", key="cancel_live_btn"):
+                state["cancelled"] = True
+    while thread.is_alive() and not state["cancelled"]:
         done, total = state["done"], state["total"]
         frac = (done / total) if total else 0.0
-        with slot.container():
-            st.progress(frac, text=f"{label} — {done}/{total}")
-            if cancel_kw and st.button("⏹ Cancel", key="cancel_live_btn"):
-                state["cancelled"] = True
-                break
+        slot.progress(frac, text=f"{label} — {done}/{total}")
         time.sleep(0.15)
+    if cancel_kw:
+        cancel_slot.empty()
     thread.join(timeout=5)
 
     if state["error"]:

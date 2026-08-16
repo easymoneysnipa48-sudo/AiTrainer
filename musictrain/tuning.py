@@ -96,6 +96,67 @@ def recommended_backend() -> str:
     return "cpu"
 
 
+def lr_find_plan(min_lr: float = 1e-6, max_lr: float = 1e-2, n: int = 10) -> List[float]:
+    """Log-spaced learning-rate candidates for an LR range test (#6)."""
+    if min_lr <= 0 or max_lr <= 0 or max_lr <= min_lr or n < 2:
+        raise ValueError("need 0 < min_lr < max_lr and n >= 2")
+    lo, hi = math.log10(min_lr), math.log10(max_lr)
+    return [round(10 ** (lo + (hi - lo) * i / (n - 1)), 8) for i in range(n)]
+
+
+def pick_best_lr(losses: Sequence[float], lrs: Sequence[float]) -> dict:
+    """Choose a learning rate from an LR range-test loss curve (#6).
+
+    Recommends the LR at the minimum loss (the practical choice — the point
+    before loss starts climbing again as LR overshoots), and also reports the
+    steepest-descent index so callers can apply the classic `min-loss LR / 10`
+    rule if they prefer a more conservative pick.
+    """
+    losses = [float(x) for x in losses]
+    lrs = [float(x) for x in lrs]
+    if len(losses) != len(lrs) or len(losses) < 2:
+        return {"best_lr": None, "best_loss": None, "reason": "need equal-length loss/lr series (>= 2)"}
+    min_i = int(min(range(len(losses)), key=lambda j: losses[j]))
+    steepest = 0
+    steepest_slope = float("inf")
+    for i in range(1, len(losses)):
+        slope = (losses[i] - losses[i - 1]) / max(lrs[i] - lrs[i - 1], 1e-12)
+        if slope < steepest_slope:
+            steepest_slope = slope
+            steepest = i
+    return {
+        "best_lr": lrs[min_i],
+        "best_loss": losses[min_i],
+        "min_loss_lr": lrs[min_i],
+        "min_loss": losses[min_i],
+        "steepest_index": steepest,
+    }
+
+
+def auto_batch_size(model_bytes: int, vram_bytes: int, dtype: str = "fp32",
+                    per_sample_bytes: int = 0, headroom: float = 0.15) -> dict:
+    """Suggest a per-device batch size from a VRAM budget (#6)."""
+    if model_bytes <= 0 or vram_bytes <= 0:
+        return {"batch": None, "note": "need model_bytes and vram_bytes to size the batch"}
+    # weights + grads (training) + optimizer states (AdamW: 2x) + activations
+    train_footprint = model_bytes * (1 + 1 + 2)
+    free = vram_bytes * (1.0 - headroom) - train_footprint
+    if per_sample_bytes <= 0:
+        return {
+            "model_training_bytes": int(train_footprint),
+            "free_after_model": int(free),
+            "note": "provide per_sample_bytes for a concrete batch size",
+        }
+    batch = max(1, int(free / per_sample_bytes))
+    return {
+        "batch": batch,
+        "model_training_bytes": int(train_footprint),
+        "free_after_model": int(free),
+        "dtype": dtype,
+        "headroom": headroom,
+    }
+
+
 def tokenize_candidates(tokens: Iterable[str]) -> List[str]:
     """Validate/normalize custom style tokens for tokenizer extension.
 
@@ -233,6 +294,16 @@ def textual_inversion(concept: str, examples: Sequence[Path]) -> dict:
 
 def run(root: Path, cfg: Config, task: str, **kwargs) -> dict:
     """Dispatch for the `musictrain tuning --task ...` command."""
+    def _series(v):
+        if not v:
+            return []
+        if isinstance(v, str):
+            return [float(x) for x in v.split(",") if x.strip()]
+        return [float(x) for x in v]
+
+    def _pick_lr():
+        return pick_best_lr(_series(kwargs.get("losses")), _series(kwargs.get("lrs")))
+
     tasks = {
         "resume": lambda: resume_from(root, kwargs.get("adapters_dir")),
         "hpo": lambda: hpo_search(cfg, kwargs.get("metric", "leaderboard_score"),
@@ -247,6 +318,14 @@ def run(root: Path, cfg: Config, task: str, **kwargs) -> dict:
         "plan": lambda: quantize_plan(
             kwargs.get("model_bytes", 0), kwargs.get("vram_bytes", 0),
             kwargs.get("dtype", "fp32")),
+        "lr-find": lambda: {"lr_candidates": lr_find_plan(
+            kwargs.get("min_lr", 1e-6), kwargs.get("max_lr", 1e-2),
+            kwargs.get("n", 10))},
+        "pick-lr": _pick_lr,
+        "auto-batch": lambda: auto_batch_size(
+            kwargs.get("model_bytes", 0), kwargs.get("vram_bytes", 0),
+            kwargs.get("dtype", "fp32"), kwargs.get("per_sample_bytes", 0),
+            kwargs.get("headroom", 0.15)),
     }
     if task not in tasks:
         console.error(f"unknown tuning task {task!r} — one of {sorted(tasks)}")

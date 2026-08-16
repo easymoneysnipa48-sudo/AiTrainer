@@ -328,3 +328,36 @@ def compute(cfg: Config, ref_dir: Path, gen_dir: Path,
     out.write_text(json.dumps(record, indent=2))
     console.ok(f"Metrics -> {out.relative_to(cfg.project_root)}")
     return record
+
+
+def fad_from_cached_stats(cfg: Config, gen_dir: Path, limit: int = 0) -> Optional[float]:
+    """Compute FAD against a cached reference distribution (gap #9).
+
+    Reuses ``metadata/fad_reference_stats.json`` (written by
+    ``musictrain audioext --task fad-cache``) so CI can score generated audio
+    without re-embedding the reference set on every run. Returns None when the
+    cache is missing or the generated dir can't be embedded.
+    """
+    cache_path = cfg.project_root / "metadata" / "fad_reference_stats.json"
+    if not cache_path.exists():
+        console.warn("No cached reference stats (run `musictrain audioext --task fad-cache`).")
+        return None
+    try:
+        cached = json.loads(cache_path.read_text())
+        mu_ref = np.asarray(cached["mean"], dtype=np.float64)
+        cov_ref = np.asarray(cached["cov"], dtype=np.float64) + np.eye(mu_ref.shape[0]) * cfg.metrics.fad_eps
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        console.warn(f"Cached reference stats unreadable ({exc}).")
+        return None
+
+    if not cfg.clap.enabled:
+        console.warn("CLAP disabled — FAD from cached stats needs CLAP.")
+        return None
+    gen_embs = _embed_dir(cfg, Path(gen_dir), limit=limit)
+    if len(gen_embs) < 2:
+        console.warn("FAD from cache needs >= 2 generated clips.")
+        return None
+    gen = np.stack(gen_embs)
+    mu_gen, cov_gen = _gaussian(gen, cfg.metrics.fad_eps)
+    fad = frechet_distance(mu_ref, cov_ref, mu_gen, cov_gen)
+    return round(fad, 4) if fad is not None else None

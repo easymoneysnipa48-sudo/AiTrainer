@@ -73,23 +73,46 @@ def _self_test() -> int:
 
 
 def _real_gate() -> int:
-    """Run the combined quality gate against committed artifacts, if present."""
+    """Run the combined quality gate against committed artifacts, if present.
+
+    FAD is sourced in priority order: an explicit value in
+    ``metadata/metrics.json``, else computed against the cached reference stats
+    (``metadata/fad_reference_stats.json``) using ``outputs/eval`` — so a
+    self-hosted runner can precompute the reference distribution once and reuse
+    it here without re-embedding the reference set (#9).
+    """
     results = ROOT / "metadata" / "eval_results.jsonl"
     metrics = ROOT / "metadata" / "metrics.json"
-    if not results.exists() and not metrics.exists():
-        print("no artifacts (metadata/eval_results.jsonl or metrics.json) — "
-              "skipping real gate; self-test only")
+    fad_cache = ROOT / "metadata" / "fad_reference_stats.json"
+    if not results.exists() and not metrics.exists() and not fad_cache.exists():
+        print("no artifacts (eval_results.jsonl / metrics.json / "
+              "fad_reference_stats.json) — skipping real gate; self-test only")
         return 0
 
     from musictrain.config import Config
     from musictrain.gates import quality_gate
 
     if not results.exists():
-        return _fail("metadata/metrics.json present but eval_results.jsonl missing")
+        return _fail("artifacts present (metrics/cache) but eval_results.jsonl missing")
 
     cfg = Config()
     cfg.project_root = ROOT
-    verdict = quality_gate(root=ROOT, cfg=cfg, allow_missing_fad=True)
+
+    fad = None
+    if metrics.exists():
+        try:
+            fad = json.loads(metrics.read_text()).get("fad_clap")
+        except (json.JSONDecodeError, OSError):
+            fad = None
+    if fad is None and fad_cache.exists():
+        try:
+            from musictrain.metrics import fad_from_cached_stats
+
+            fad = fad_from_cached_stats(cfg, ROOT / "outputs" / "eval")
+        except Exception as exc:  # noqa: BLE001 - FAD is best-effort in CI
+            print(f"note: FAD-from-cache failed ({exc}); gate will soft-skip FAD")
+
+    verdict = quality_gate(root=ROOT, cfg=cfg, fad=fad, allow_missing_fad=True)
     if not verdict.get("passed", False):
         return _fail(
             "quality gate FAILED: "

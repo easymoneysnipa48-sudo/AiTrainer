@@ -114,6 +114,18 @@ def cmd_split(args) -> int:
         cfg.split.stratify = args.stratify
     if args.k_folds is not None:
         cfg.split.k_folds = args.k_folds
+    if getattr(args, "check_leakage", False):
+        from .split import check_split_leakage
+
+        report = check_split_leakage(cfg.project_root)
+        if report["clean"]:
+            console.ok(f"Split leakage check: {report['checked']} — CLEAN")
+        else:
+            console.warn(
+                f"Split leakage: {report['n_overlaps']} content-hash overlap(s) — "
+                f"{report['overlapping_files'][:10]}"
+            )
+        return 0 if report["clean"] else 1
     split(cfg.project_root, cfg, dry_run=args.dry_run)
     return 0
 
@@ -161,6 +173,9 @@ def cmd_finetune(args) -> int:
         stream=args.stream, curriculum=args.curriculum, ema=args.ema,
         ema_decay=args.ema_decay, ddp=args.ddp,
         cfg_base=args.cfg_base, cfg_sweep=args.cfg_sweep,
+        accum=args.accum, val_split=args.val_split,
+        full=args.full, resume=args.resume or "",
+        check_leakage=not args.no_leakage,
     )
     return 0 if result else 1
 
@@ -184,6 +199,13 @@ def cmd_tuning(args) -> int:
         model_bytes=args.model_bytes or 0,
         vram_bytes=args.vram_bytes or 0,
         dtype=args.dtype or "fp32",
+        min_lr=args.min_lr,
+        max_lr=args.max_lr,
+        n=args.n,
+        losses=args.losses or [],
+        lrs=args.lrs or [],
+        per_sample_bytes=args.per_sample_bytes or 0,
+        headroom=args.headroom,
     )
     if result.get("error"):
         return 1
@@ -251,6 +273,8 @@ def cmd_infer(args) -> int:
         icfg.negative_prompt = args.negative
     if args.negative_retries is not None:
         icfg.negative_retries = args.negative_retries
+    if getattr(args, "adapter", None):
+        icfg.adapter = args.adapter
 
     out_dir = Path(args.out) if args.out else cfg.project_root / "outputs"
 
@@ -478,6 +502,8 @@ def cmd_eval(args) -> int:
     cfg = _build_config(args)
     if args.no_clap:
         cfg.clap.enabled = False
+    if getattr(args, "adapter", None):
+        cfg.inference.adapter = args.adapter
     results = run_eval(
         cfg,
         limit=args.limit,
@@ -572,6 +598,25 @@ def cmd_significance(args) -> int:
             console.error("Both --a and --b files must contain eval results.")
             return 1
         out = compare(cfg, a_rows, b_rows, label_a=args.a, label_b=args.b)
+    if not out:
+        return 1
+    console.ok(out.get("summary", ""))
+    return 0
+
+
+def cmd_ab_eval(args) -> int:
+    from .ab_eval import run_ab_eval
+
+    cfg = _build_config(args)
+    if args.no_clap:
+        cfg.clap.enabled = False
+    out = run_ab_eval(
+        cfg,
+        args.adapter,
+        limit=args.limit,
+        seeds=args.seeds,
+        section=args.section,
+    )
     if not out:
         return 1
     console.ok(out.get("summary", ""))
@@ -1247,6 +1292,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.add_argument("--stratify", default=None, help="Stratify by key|bpm|genre|mood (#23)")
     sp.add_argument("--k-folds", type=int, default=None, help="N-fold cross-validation instead of train/val/test (#22)")
+    sp.add_argument("--check-leakage", action="store_true",
+                    help="Check train/val/test content-hash disjunction instead of splitting (#8)")
     sp.set_defaults(func=cmd_split)
 
     # export
@@ -1275,6 +1322,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--negative-retries", type=int, default=None, help="Auto-regenerate until negative constraint passes (#33)")
     sp.add_argument("--continue-from", default=None, help="Continue from an existing audio clip (#35)")
     sp.add_argument("--melody-from", default=None, help="Follow a clip's melody (use musicgen-melody) (#36)")
+    sp.add_argument("--adapter", default=None, help="LoRA adapter dir to load onto the base model (#1)")
     sp.add_argument("--cache", action="store_true",
                     help="Deterministic cache: identical settings reuse prior output (advanced #20)")
     sp.set_defaults(func=cmd_infer)
@@ -1393,6 +1441,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-clap", action="store_true", help="Skip CLAP prompt-adherence scoring")
     sp.add_argument("--incremental", action="store_true",
                     help="Keep passed rows, re-run only failed/new prompts (advanced #49)")
+    sp.add_argument("--adapter", default=None, help="LoRA adapter dir to eval against (#1)")
     sp.set_defaults(func=cmd_eval)
 
     # difficulty (advanced #6-#9)
@@ -1438,6 +1487,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ddp", action="store_true", help="Multi-GPU DDP (#30)")
     sp.add_argument("--cfg-base", type=float, default=3.0, help="Base guidance scale for sweep (#28)")
     sp.add_argument("--cfg-sweep", type=int, default=0, help="Number of CFG candidates to log (#28)")
+    sp.add_argument("--accum", type=int, default=1, help="Gradient accumulation steps (#4)")
+    sp.add_argument("--val-split", type=float, default=0.0, help="Fraction held out for per-epoch validation (#4)")
+    sp.add_argument("--full", action="store_true", help="Full fine-tune of the decoder (no LoRA) (#5)")
+    sp.add_argument("--resume", default=None, help="Resume from a prior adapter/checkpoint dir (#3)")
+    sp.add_argument("--no-leakage", action="store_true", help="Skip the train/val/test leakage guard (#8)")
     sp.set_defaults(func=cmd_finetune)
 
     # tuning (gap #1-#7)
@@ -1447,7 +1501,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common(sp)
     sp.add_argument("--task", required=True,
-                    choices=["resume", "hpo", "mlx", "quantize", "tokens", "inversion", "plan"],
+                    choices=["resume", "hpo", "mlx", "quantize", "tokens", "inversion", "plan",
+                             "lr-find", "pick-lr", "auto-batch"],
                     help="Which tuning helper to run")
     sp.add_argument("--adapters", default=None, help="Adapters dir for resume")
     sp.add_argument("--metric", default="leaderboard_score", help="HPO objective metric")
@@ -1461,6 +1516,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--model-bytes", type=int, default=0, help="Model size for grad-accum plan")
     sp.add_argument("--vram-bytes", type=int, default=0, help="VRAM budget for grad-accum plan")
     sp.add_argument("--dtype", default="fp32", choices=["fp32", "fp16", "bf16"])
+    sp.add_argument("--min-lr", type=float, default=1e-6, help="LR range-test lower bound (#6)")
+    sp.add_argument("--max-lr", type=float, default=1e-2, help="LR range-test upper bound (#6)")
+    sp.add_argument("--n", type=int, default=10, help="LR range-test candidate count (#6)")
+    sp.add_argument("--losses", default=None, help="Comma-separated losses for pick-lr")
+    sp.add_argument("--lrs", default=None, help="Comma-separated LRs for pick-lr")
+    sp.add_argument("--per-sample-bytes", type=int, default=0, help="Bytes/sample for auto-batch (#6)")
+    sp.add_argument("--headroom", type=float, default=0.15, help="VRAM headroom for auto-batch (#6)")
     sp.set_defaults(func=cmd_tuning)
 
     # evalx (gap #8-#13)
@@ -1541,6 +1603,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--meta", nargs="*", default=None,
                     help="JSON file(s) with {delta, se} per study for meta-analysis (advanced #5)")
     sp.set_defaults(func=cmd_significance)
+
+    # ab-eval (gap #2: base vs fine-tuned on the fixed eval set)
+    sp = sub.add_parser(
+        "ab-eval",
+        help="Run the fixed eval set on base vs adapter and diff with significance",
+    )
+    add_common(sp)
+    sp.add_argument("--adapter", required=True, help="LoRA adapter dir to compare against the base model")
+    sp.add_argument("--limit", type=int, default=0, help="Only run the first N prompts")
+    sp.add_argument("--section", default=None, help="Only run prompts for this section (comma-separated)")
+    sp.add_argument("--seeds", type=int, default=1, help="Seeds per prompt")
+    sp.add_argument("--no-clap", action="store_true", help="Skip CLAP prompt-adherence scoring")
+    sp.set_defaults(func=cmd_ab_eval)
 
     # leaderboard
     sp = sub.add_parser(

@@ -60,7 +60,39 @@ def load_model(cfg: InferenceCfg) -> Tuple:
         cfg.model_name, torch_dtype=dtype
     ).to(device)
     processor = AutoProcessor.from_pretrained(cfg.model_name)
+    model = _load_adapter(model, cfg, device)
     return processor, model, device
+
+
+def _load_adapter(model, cfg: InferenceCfg, device: str):
+    """Load a LoRA adapter dir onto the base model, if configured (gap #1).
+
+    ``cfg.adapter`` points at a directory produced by ``musictrain finetune``
+    (a PeftModel saved via ``model.decoder.save_pretrained``). Returns the base
+    model unchanged when no adapter is set or the dir is missing/not a PEFT
+    checkpoint, so inference never hard-fails on a bad adapter path.
+    """
+    if not cfg.adapter:
+        return model
+    adir = Path(cfg.adapter)
+    if not adir.exists():
+        console.warn(f"adapter dir not found: {adir} — falling back to base model")
+        log.warning("adapter dir %s does not exist; using base model", adir)
+        return model
+    try:
+        from peft import PeftModel
+    except ImportError:
+        console.error("Loading adapters needs `pip install peft`.")
+        return model
+    try:
+        model.decoder = PeftModel.from_pretrained(model.decoder, adir)
+        model.decoder = model.decoder.to(device)
+        console.ok(f"Loaded adapter -> {adir}")
+        log.info("loaded LoRA adapter from %s", adir)
+    except Exception as exc:  # noqa: BLE001 - never hard-fail generation
+        console.warn(f"adapter load failed ({exc}) — using base model")
+        log.warning("adapter load failed: %s", exc)
+    return model
 
 
 # --------------------------------------------------------------------------- #
@@ -78,6 +110,7 @@ def _cache_key(cfg: Config, prompt: str, seed: Optional[int],
         str(icfg.max_new_tokens), icfg.preset or "", str(icfg.temperature),
         str(icfg.top_k), str(icfg.top_p), str(cond_path or ""),
         conditioning_kind or "", str(icfg.negative_prompt or ""),
+        str(icfg.adapter or ""),
     ]
     import hashlib
 

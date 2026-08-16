@@ -398,6 +398,7 @@ def _aggregate(prompt: dict, seed_records: List[dict], cfg: Config) -> dict:
     return {
         "experiment_id": cfg.mlflow.experiment_name,
         "checkpoint": cfg.inference.model_name,
+        "adapter": cfg.inference.adapter or None,
         "prompt": prompt["description"],
         "seed": prompt.get("seed"),
         "n_seeds": n,
@@ -428,6 +429,7 @@ def run_eval(
     progress: Optional[Callable[[int, int], None]] = None,
     cancel: Optional[Callable[[], bool]] = None,
     incremental: bool = False,
+    results_file: Optional[Path] = None,
 ) -> List[dict]:
     from .evaluate import check
     from .experiments import log_eval, log_inference
@@ -539,7 +541,9 @@ def run_eval(
 
     del model
 
-    out = cfg.project_root / "metadata" / "eval_results.jsonl"
+    out = results_file or (cfg.project_root / "metadata" / "eval_results.jsonl")
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
     with jsonlines.open(out, mode="w") as w:
         for r in (kept + results) if incremental else results:
             w.write(r)
@@ -562,7 +566,7 @@ def run_eval(
             "section": section or "",
             "limit": limit or 0,
             "ok_majority": ok,
-            "results_file": "metadata/eval_results.jsonl",
+            "results_file": str(out.relative_to(cfg.project_root)),
         },
     )
     return results

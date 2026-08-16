@@ -231,3 +231,39 @@ def split(root: Path, cfg: Config, dry_run: bool = False) -> Dict[str, List[str]
     _materialize(root, assignment, groups, cfg)
     console.ok("Split complete.")
     return assignment
+
+
+def check_split_leakage(root: Path, dirs: Optional[List[str]] = None) -> dict:
+    """Content-hash disjunction check across the split dirs (gap #8).
+
+    Hashes every file in ``data/{train,val,test}`` and flags any content that
+    appears in more than one split — catches a clip copied (not just linked)
+    into two splits, which song-level assignment can miss. Returns a verdict
+    dict (``clean`` key) and the overlapping file paths.
+    """
+    import hashlib
+
+    dirs = dirs or ["train", "val", "test"]
+    owner: Dict[str, str] = {}
+    overlaps: Dict[str, List[str]] = {}
+    counts: Dict[str, int] = {d: 0 for d in dirs}
+    for d in dirs:
+        data_dir = root / "data" / d
+        if not data_dir.exists():
+            continue
+        for p in sorted(data_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            h = hashlib.sha256(p.read_bytes()).hexdigest()
+            counts[d] += 1
+            if h in owner and owner[h] != d:
+                overlaps.setdefault(h, []).append(str(p.relative_to(root)))
+            else:
+                owner[h] = d
+    dup_files = sorted({f for fs in overlaps.values() for f in fs})
+    return {
+        "checked": counts,
+        "n_overlaps": len(overlaps),
+        "overlapping_files": dup_files,
+        "clean": not overlaps,
+    }

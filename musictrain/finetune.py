@@ -170,6 +170,101 @@ def maybe_ddp(model, device: str):
     return model
 
 
+def _encode_batch(model, processor, batch: List[Tuple[Path, str]], device: str,
+                  use_bf16: bool):
+    """Encode one batch to EnCodec codes + text-conditioning hidden states."""
+    import soundfile as sf
+    import torch
+
+    input_values = []
+    text_inputs = None
+    for path, desc in batch:
+        audio, _ = sf.read(str(path), dtype="float32", always_2d=True)
+        audio = audio.mean(axis=1)
+        input_values.append(torch.from_numpy(audio)[None, None].to(device))
+        ti = processor(text=desc, return_tensors="pt", padding=True)
+        ti = {k: v.to(device) for k, v in ti.items()}
+        if text_inputs is None:
+            text_inputs = ti
+    iv = torch.cat(input_values, dim=0)
+    if use_bf16:
+        iv = iv.to(dtype=torch.bfloat16)
+    with torch.no_grad():
+        enc = model.encodec(iv)
+        codes = enc.audio_codes[:, 0, :].to(device)  # [B, T] single codebook
+        hidden = model.text_encoder(**text_inputs).last_hidden_state
+        hidden = model.encoder_proj(hidden) if hasattr(model, "encoder_proj") else hidden
+    return codes, hidden
+
+
+def _decoder_loss(model, codes, hidden, use_bf16: bool):
+    """Next-token cross-entropy on the decoder, with optional bf16 autocast."""
+    import torch
+
+    if use_bf16:
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            out = model.decoder(
+                input_ids=codes[:, :-1], encoder_hidden_states=hidden, labels=codes[:, 1:]
+            )
+            return out.loss
+    out = model.decoder(
+        input_ids=codes[:, :-1], encoder_hidden_states=hidden, labels=codes[:, 1:]
+    )
+    return out.loss
+
+
+def _set_lr(optim, value: float) -> None:
+    for g in optim.param_groups:
+        g["lr"] = value
+
+
+def _save_checkpoint(out_dir: Path, optim, opt_step: int, step: int,
+                     losses: List[float], val_losses: List[float],
+                     ema: bool, ema_params: List, meta: dict) -> None:
+    """Persist optimizer + LR-scheduler counters so training can resume (#3)."""
+    import torch
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "optimizer": optim.state_dict(),
+            "opt_step": opt_step,
+            "step": step,
+            "losses": losses,
+            "val_losses": val_losses,
+            "ema": ema_params if ema else None,
+        },
+        out_dir / "trainer_state.pt",
+    )
+    (out_dir / "trainer_state.json").write_text(json.dumps(meta, indent=2))
+
+
+def _load_checkpoint_state(resume_dir: Path, optim, ema_params: List, ema: bool) -> dict:
+    """Restore optimizer/scheduler state + counters from a prior run (#3)."""
+    import torch
+
+    resume_dir = Path(resume_dir)
+    pt = resume_dir / "trainer_state.pt"
+    if not pt.exists():
+        return {"opt_step": 0, "step": 0, "losses": [], "val_losses": []}
+    try:
+        state = torch.load(pt, map_location="cpu")
+        optim.load_state_dict(state.get("optimizer", {}))
+    except Exception as exc:  # noqa: BLE001 - best-effort resume
+        log.warning("optimizer state restore failed: %s", exc)
+    if ema and ema_params and state.get("ema"):
+        with torch.no_grad():
+            for e, s in zip(ema_params, state["ema"]):
+                e.copy_(s)
+    return {
+        "opt_step": state.get("opt_step", 0),
+        "step": state.get("step", 0),
+        "losses": list(state.get("losses", [])),
+        "val_losses": list(state.get("val_losses", [])),
+    }
+
+
 def train(
     cfg: Config,
     steps: int = 5,
@@ -189,8 +284,22 @@ def train(
     ddp: bool = False,
     cfg_base: float = 3.0,
     cfg_sweep: int = 0,
+    # gap #3/#4/#5 — resume, gradient accumulation, validation, full fine-tune
+    accum: int = 1,
+    val_split: float = 0.0,
+    full: bool = False,
+    resume: str = "",
+    check_leakage: bool = True,
 ) -> dict:
-    """LoRA-train the decoder on (audio, description) pairs, save adapters."""
+    """Train the decoder — LoRA by default, or full fine-tune — on
+    (audio, description) pairs.
+
+    * ``steps`` is the number of full passes over the data (epochs).
+    * ``accum`` > 1 accumulates gradients over micro-batches (#4).
+    * ``val_split`` > 0 holds out a fraction for a per-epoch validation loss (#4).
+    * ``full`` trains every decoder weight instead of LoRA adapters (#5).
+    * ``resume`` restores weights + optimizer/scheduler state from a prior run (#3).
+    """
     pairs = _pairs(cfg.project_root, limit=limit)
     if not pairs:
         console.error(
@@ -204,8 +313,25 @@ def train(
     console.step(f"Training data: {len(pairs)} pair(s) — first: {pairs[0][0].name}")
 
     if steps <= 0:
-        console.ok(f"Dry run: data prepared, LoRA would train on {len(pairs)} pair(s)")
-        return {"dry_run": True, "n_pairs": len(pairs), "steps": 0}
+        console.ok(
+            f"Dry run: data prepared, {'full' if full else 'LoRA'} would train "
+            f"on {len(pairs)} pair(s)"
+        )
+        return {"dry_run": True, "n_pairs": len(pairs), "steps": 0, "full": full}
+
+    # gap #8 — content-hash leakage guard before training
+    if check_leakage:
+        from .split import check_split_leakage
+
+        leak = check_split_leakage(cfg.project_root)
+        if not leak["clean"]:
+            console.warn(
+                f"Split leakage: {leak['n_overlaps']} content hash(es) appear in "
+                f"more than one split — {leak['overlapping_files'][:5]}"
+            )
+        else:
+            console.ok(f"Leakage guard: no overlapping content across splits "
+                       f"{leak['checked']}")
 
     try:
         import torch
@@ -213,11 +339,12 @@ def train(
         console.error(f"torch unavailable: {exc}")
         return {}
 
-    try:
-        import peft  # noqa: F401
-    except Exception:  # noqa: BLE001
-        console.error("LoRA fine-tuning needs `pip install peft`.")
-        return {}
+    if not full:
+        try:
+            import peft  # noqa: F401
+        except Exception:  # noqa: BLE001
+            console.error("LoRA fine-tuning needs `pip install peft` (or pass --full).")
+            return {}
 
     from .inference import load_model, resolve_device
 
@@ -236,14 +363,32 @@ def train(
 
     model.train()
 
-    # LoRA on the decoder's attention projections
-    from peft import LoraConfig, get_peft_model
+    resume_dir = Path(resume) if resume else None
 
-    lora_cfg = LoraConfig(
-        r=r, lora_alpha=2 * r, target_modules=["k_proj", "q_proj", "v_proj", "out_proj"],
-        lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
-    )
-    model.decoder = get_peft_model(model.decoder, lora_cfg)
+    # -- mode: full fine-tune (#5) vs LoRA ---------------------------------
+    if full:
+        for p in model.decoder.parameters():
+            p.requires_grad = True
+        if resume_dir and (resume_dir / "decoder_state.pt").exists():
+            try:
+                model.decoder.load_state_dict(
+                    torch.load(resume_dir / "decoder_state.pt", map_location=device)
+                )
+                console.ok(f"Resumed full decoder weights from {resume_dir}")
+            except Exception as exc:  # noqa: BLE001
+                console.warn(f"decoder state restore failed ({exc}) — starting fresh")
+    else:
+        from peft import LoraConfig, PeftModel, get_peft_model
+
+        lora_cfg = LoraConfig(
+            r=r, lora_alpha=2 * r, target_modules=["k_proj", "q_proj", "v_proj", "out_proj"],
+            lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+        )
+        if resume_dir and (resume_dir / "adapter_config.json").exists():
+            model.decoder = PeftModel.from_pretrained(model.decoder, resume_dir)
+            console.ok(f"Resumed LoRA adapter from {resume_dir}")
+        else:
+            model.decoder = get_peft_model(model.decoder, lora_cfg)
 
     # #30 multi-GPU
     if ddp:
@@ -251,7 +396,10 @@ def train(
 
     if use_bf16:
         model.decoder = model.decoder.to(dtype=torch.bfloat16)
-    model.decoder.print_trainable_parameters()
+    try:
+        model.decoder.print_trainable_parameters()
+    except Exception:  # noqa: BLE001 - full mode has no PEFT summary
+        pass
 
     optim = torch.optim.AdamW(
         (p for p in model.decoder.parameters() if p.requires_grad), lr=lr
@@ -262,64 +410,79 @@ def train(
     if ema:
         ema_params = [p.detach().clone().float() for p in model.decoder.parameters() if p.requires_grad]
 
-    total_steps = steps * max(len(pairs) // batch_size, 1)
+    # -- train/val split (#4 validation) ----------------------------------
+    train_pairs = pairs
+    val_pairs: List[Tuple[Path, str]] = []
+    if 0.0 < val_split < 1.0 and len(pairs) > 1:
+        n_val = max(1, int(len(pairs) * val_split))
+        val_pairs = pairs[-n_val:]
+        train_pairs = pairs[:-n_val]
+        console.info(f"Validation hold-out: {len(val_pairs)} pair(s)")
+
+    # -- resume optimizer/counters (#3) -----------------------------------
+    opt_step = 0
+    start_step = 0
     losses: List[float] = []
-    step_idx = 0
+    val_losses: List[float] = []
+    if resume_dir:
+        st = _load_checkpoint_state(resume_dir, optim, ema_params, ema)
+        opt_step = st["opt_step"]
+        start_step = st["step"]
+        losses = st["losses"]
+        val_losses = st["val_losses"]
+        if start_step:
+            console.ok(f"Resumed at step {start_step} (opt_step {opt_step})")
 
-    for step in range(1, steps + 1):
+    n_train_batches = max(len(train_pairs) // batch_size, 1)
+    total_opt_steps = steps * max((n_train_batches + accum - 1) // accum, 1)
+
+    for step in range(start_step + 1, steps + 1):
         total = 0.0
-        n_batches = 0
-        batches = iter_batches(pairs, batch_size) if stream else \
-            [pairs[i:i + batch_size] for i in range(0, len(pairs), batch_size)]
+        n_micro = 0
+        batches = iter_batches(train_pairs, batch_size) if stream else \
+            [train_pairs[i:i + batch_size] for i in range(0, len(train_pairs), batch_size)]
+        optim.zero_grad()
         for batch in batches:
-            lr_now = lr_schedule(step_idx, lr, warmup_steps, total_steps, lr_mode)
-            for g in optim.param_groups:
-                g["lr"] = lr_now
-            step_idx += 1
-
-            input_values = []
-            text_inputs = None
-            for path, desc in batch:
-                import soundfile as sf
-
-                audio, _ = sf.read(str(path), dtype="float32", always_2d=True)
-                audio = audio.mean(axis=1)
-                input_values.append(torch.from_numpy(audio)[None, None].to(device))
-                ti = processor(text=desc, return_tensors="pt", padding=True)
-                ti = {k: v.to(device) for k, v in ti.items()}
-                if text_inputs is None:
-                    text_inputs = ti
-            iv = torch.cat(input_values, dim=0)
-            if use_bf16:
-                iv = iv.to(dtype=torch.bfloat16)
-
-            with torch.no_grad():
-                enc = model.encodec(iv)  # EnCodec tokens
-                codes = enc.audio_codes[:, 0, :].to(device)  # [B, T] single codebook
-                hidden = model.text_encoder(**text_inputs).last_hidden_state
-                hidden = model.encoder_proj(hidden) if hasattr(model, "encoder_proj") else hidden
-
-            optim.zero_grad()
-            if use_bf16:
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    out = model.decoder(
-                        input_ids=codes[:, :-1], encoder_hidden_states=hidden, labels=codes[:, 1:]
-                    )
-                    loss = out.loss
-            else:
-                out = model.decoder(
-                    input_ids=codes[:, :-1], encoder_hidden_states=hidden, labels=codes[:, 1:]
-                )
-                loss = out.loss
-            loss.backward()
+            codes, hidden = _encode_batch(model, processor, batch, device, use_bf16)
+            loss = _decoder_loss(model, codes, hidden, use_bf16)
+            (loss / accum).backward()
+            n_micro += 1
+            total += float(loss.detach().cpu())
+            if n_micro % accum == 0:
+                _set_lr(optim, lr_schedule(opt_step, lr, warmup_steps, total_opt_steps, lr_mode))
+                optim.step()
+                optim.zero_grad()
+                opt_step += 1
+                if ema:
+                    trainable = [p for p in model.decoder.parameters() if p.requires_grad]
+                    ema_update(ema_params, trainable, ema_decay)
+        # flush a trailing partial accumulation group
+        if n_micro % accum != 0:
+            _set_lr(optim, lr_schedule(opt_step, lr, warmup_steps, total_opt_steps, lr_mode))
             optim.step()
+            optim.zero_grad()
+            opt_step += 1
             if ema:
                 trainable = [p for p in model.decoder.parameters() if p.requires_grad]
                 ema_update(ema_params, trainable, ema_decay)
-            total += float(loss.detach().cpu())
-            n_batches += 1
-        losses.append(round(total / max(n_batches, 1), 4))
-        console.step(f"step {step}/{steps} loss={losses[-1]} lr={lr_now:.2e}")
+        train_loss = round(total / max(n_micro, 1), 4)
+        losses.append(train_loss)
+        console.step(f"step {step}/{steps} loss={train_loss} lr={optim.param_groups[0]['lr']:.2e}")
+
+        # -- per-epoch validation (#4) ------------------------------------
+        if val_pairs:
+            model.eval()
+            vtotal = 0.0
+            vn = 0
+            with torch.no_grad():
+                for vb in [val_pairs[i:i + batch_size] for i in range(0, len(val_pairs), batch_size)]:
+                    codes, hidden = _encode_batch(model, processor, vb, device, use_bf16)
+                    vloss = _decoder_loss(model, codes, hidden, use_bf16)
+                    vtotal += float(vloss.detach().cpu())
+                    vn += 1
+            val_losses.append(round(vtotal / max(vn, 1), 4))
+            console.info(f"  val loss={val_losses[-1]}")
+            model.train()
 
     # apply EMA weights before saving
     if ema:
@@ -342,12 +505,35 @@ def train(
 
     out_dir = Path(out_dir) if out_dir else cfg.project_root / "adapters"
     out_dir.mkdir(parents=True, exist_ok=True)
-    model.decoder.save_pretrained(out_dir)
-    console.ok(f"LoRA adapters -> {out_dir.relative_to(cfg.project_root)}")
+    if full:
+        torch.save(model.decoder.state_dict(), out_dir / "decoder_state.pt")
+        console.ok(f"Full decoder weights -> {out_dir.relative_to(cfg.project_root)}")
+    else:
+        model.decoder.save_pretrained(out_dir)
+        console.ok(f"LoRA adapters -> {out_dir.relative_to(cfg.project_root)}")
+
+    _save_checkpoint(
+        out_dir, optim, opt_step, steps, losses, val_losses, ema, ema_params,
+        {
+            "mode": "full" if full else "lora",
+            "steps": steps,
+            "lr": lr,
+            "r": r,
+            "batch_size": batch_size,
+            "accum": accum,
+            "val_split": val_split,
+            "n_pairs": len(pairs),
+            "lr_mode": lr_mode,
+            "warmup_steps": warmup_steps,
+        },
+    )
 
     return {
         "out_dir": str(out_dir), "steps": steps, "n_pairs": len(pairs),
-        "losses": losses, "final_loss": losses[-1] if losses else None, "r": r,
+        "losses": losses, "val_losses": val_losses,
+        "final_loss": losses[-1] if losses else None,
+        "final_val_loss": val_losses[-1] if val_losses else None,
+        "r": r, "full": full, "accum": accum,
         "gradient_checkpointing": gradient_checkpointing, "bf16": use_bf16,
         "ema": ema, "ddp": ddp, "curriculum": curriculum,
         "cfg_sweep": cfg_points, "lr_schedule": {"mode": lr_mode, "warmup_steps": warmup_steps},

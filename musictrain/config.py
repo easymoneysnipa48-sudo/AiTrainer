@@ -75,6 +75,7 @@ class InferenceCfg:
     negative_prompt: str = ""              # CLAP-checked "no X" constraints (#33)
     negative_threshold: float = 0.25        # CLAP sim above this -> violation
     negative_retries: int = 0               # auto-regenerate until not violating
+    adapter: str = ""                       # LoRA adapter dir to load onto the base model
 
 
 @dataclass

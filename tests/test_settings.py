@@ -1,4 +1,6 @@
 """Unit tests for the Settings page backing modules (templates + transfer + config)."""
+from pathlib import Path
+
 import pytest
 
 from musictrain import transfer
@@ -112,3 +114,16 @@ def test_settings_roundtrip(tmp_path):
     assert loaded.settings.upload_dir == "my/uploads"
     assert loaded.settings.allow_external_paths is True
     assert loaded.settings.default_model == "facebook/musicgen-melody"
+
+
+def test_dashboard_theme_overrides_streamlit_vars():
+    """Regression: the dashboard must override Streamlit's native --text-color
+    (and friends) for both themes, otherwise toggling changes the background but
+    not the text. This is what makes the light/dark toggle actually recolor text."""
+    src = (Path(__file__).resolve().parents[1] / "musictrain" / "dashboard.py").read_text()
+    # both themes must ship an !important override for the text color variable
+    assert "--text-color: #1c2333 !important" in src
+    assert "--text-color: #e6e9f2 !important" in src
+    assert "--heading-color: #111827 !important" in src
+    assert "--heading-color: #f2f4fb !important" in src
+    assert "def _theme_vars(light: bool) -> str:" in src

@@ -138,12 +138,44 @@ _LIGHT_CSS = """
 """
 
 
+def _theme_vars(light: bool) -> str:
+    """Override Streamlit's own theme CSS variables so every native widget
+    (markdown text, headings, links, labels, inputs) follows the toggle.
+    This is what makes the toggle actually change text colors — Streamlit
+    paints most text via ``var(--text-color)`` and friends."""
+    if light:
+        return """
+  :root, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+    --background-color: #f4f6fb !important;
+    --secondary-background-color: #ffffff !important;
+    --quiet-background-color: #eef1f8 !important;
+    --text-color: #1c2333 !important;
+    --heading-color: #111827 !important;
+    --link-color: #2563eb !important;
+    --small-link-color: #2563eb !important;
+  }
+"""
+    return """
+  :root, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+    --background-color: #0f1220 !important;
+    --secondary-background-color: #141a2e !important;
+    --quiet-background-color: #141a2e !important;
+    --text-color: #e6e9f2 !important;
+    --heading-color: #f2f4fb !important;
+    --link-color: #9db4ff !important;
+    --small-link-color: #9db4ff !important;
+  }
+"""
+
+
 def _theme_css() -> str:
     light = st.session_state.get("mt_theme") == "light"
     base = _LIGHT_CSS if light else _DARK_CSS
     accent = st.session_state.get("mt_accent", "#5b8cff")
+    vars_css = _theme_vars(light)
     return base + f"""
 <style>
+{vars_css}
   :root, .stApp {{ --mt-accent: {accent}; --mt-accent-2: #7c5cff; }}
   .stApp, [data-testid="stSidebar"], [data-testid="stMetric"], .stButton > button,
   [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,

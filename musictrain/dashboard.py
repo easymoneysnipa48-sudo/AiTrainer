@@ -170,8 +170,22 @@ def _theme_vars(light: bool) -> str:
 
 _FONTS = {
     "System": "'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "Inter": "'Inter', system-ui, sans-serif",
+    "Space Grotesk": "'Space Grotesk', system-ui, sans-serif",
+    "Lexend": "'Lexend', system-ui, sans-serif",
+    "Sora": "'Sora', system-ui, sans-serif",
+    "JetBrains Mono": "'JetBrains Mono', ui-monospace, monospace",
     "Serif": "Georgia, 'Times New Roman', serif",
     "Mono": "ui-monospace, 'SF Mono', Menlo, monospace",
+}
+
+# Google Fonts specs, loaded only when the matching font is picked.
+_WEB_FONTS = {
+    "Inter": "Inter:wght@400;500;600;700;800",
+    "Space Grotesk": "Space+Grotesk:wght@400;500;600;700",
+    "Lexend": "Lexend:wght@400;500;600;700",
+    "Sora": "Sora:wght@400;500;600;700",
+    "JetBrains Mono": "JetBrains+Mono:wght@400;500;700",
 }
 
 
@@ -179,10 +193,17 @@ def _theme_css() -> str:
     light = st.session_state.get("mt_theme") == "light"
     base = _LIGHT_CSS if light else _DARK_CSS
     accent = st.session_state.get("mt_accent", "#5b8cff")
-    font = _FONTS.get(st.session_state.get("mt_font", "System"), _FONTS["System"])
+    font_name = st.session_state.get("mt_font", "System")
+    font = _FONTS.get(font_name, _FONTS["System"])
+    import_url = _WEB_FONTS.get(font_name, "")
+    fonts_import = (
+        f"@import url('https://fonts.googleapis.com/css2?family={import_url}&display=swap');"
+        if import_url else ""
+    )
     vars_css = _theme_vars(light)
     return base + f"""
 <style>
+{fonts_import}
 {vars_css}
   :root, .stApp {{ --mt-accent: {accent}; --mt-accent-2: #7c5cff; }}
   .stApp, [data-testid="stSidebar"], [data-testid="stMetric"], .stButton > button,
@@ -207,13 +228,66 @@ def _theme_css() -> str:
   .mt-card-line {{ font-size: 1.05rem; line-height: 1.7; }}
   /* uikit components */
   .mt-chip {{ display:inline-block; font-size:.72rem; color:#9aa3c0;
-    border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:2px 9px; margin:2px 4px 2px 0; }}
+    border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:2px 9px; margin:2px 4px 2px 0;
+    transition: transform .12s ease, border-color .12s ease, background-color .2s ease; }}
   .mt-chip b {{ color:#eef1fb; }}
+  .mt-chip:hover {{ transform: translateY(-1px); border-color: var(--mt-accent); background: color-mix(in srgb, var(--mt-accent) 10%, transparent); }}
   .mt-tile {{ background: rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.08);
     border-radius:12px; padding:12px 14px; margin:4px 0; }}
   .mt-tile-l {{ font-size:.74rem; color:#9aa3c0; }}
   .mt-tile-v {{ font-size:1.35rem; font-weight:700; color:#eef1fb; }}
   .mt-tile-d {{ font-size:.72rem; color:#7ee2a8; }}
+
+  /* ---- loader & polish upgrades ---- */
+  /* gradient page title */
+  .mt-header .mt-title {{ background: linear-gradient(120deg, var(--mt-accent), var(--mt-accent-2));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }}
+  /* animated gradient progress bars */
+  [data-testid="stProgress"] > div {{ border-radius: 999px; overflow: hidden;
+    background: rgba(128,128,128,.16); height: 10px !important; }}
+  [data-testid="stProgress"] > div > div {{ background: linear-gradient(90deg, var(--mt-accent), var(--mt-accent-2)) !important;
+    border-radius: 999px; position: relative; overflow: hidden; transition: width .25s ease; }}
+  [data-testid="stProgress"] > div > div::after {{ content: ''; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.4), transparent);
+    animation: mt-sweep 1.2s linear infinite; }}
+  @keyframes mt-sweep {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(100%); }} }}
+  /* skeleton loading cards (avataar + lines) */
+  .mt-sk-wrap {{ display: flex; flex-direction: column; gap: 10px; }}
+  .mt-sk-card {{ display: flex; gap: 12px; align-items: center; border: 1px solid rgba(128,128,128,.15);
+    border-radius: 14px; padding: 14px; background: rgba(128,128,128,.05); }}
+  .mt-sk-avatar, .mt-sk-line {{ background: linear-gradient(90deg, rgba(128,128,128,.12) 25%, rgba(128,128,128,.26) 37%, rgba(128,128,128,.12) 63%);
+    background-size: 400px 100%; animation: mt-shimmer 1.4s ease-in-out infinite; }}
+  .mt-sk-avatar {{ width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0; }}
+  .mt-sk-body {{ flex: 1; display: flex; flex-direction: column; gap: 8px; }}
+  .mt-sk-line {{ height: 12px; border-radius: 8px; }}
+  .mt-sk-line.w80 {{ width: 80%; }} .mt-sk-line.w60 {{ width: 60%; }} .mt-sk-line.w40 {{ width: 40%; }}
+  /* custom scrollbars */
+  ::-webkit-scrollbar {{ width: 10px; height: 10px; }}
+  ::-webkit-scrollbar-thumb {{ background: rgba(128,128,128,.3); border-radius: 8px;
+    border: 2px solid transparent; background-clip: content-box; }}
+  ::-webkit-scrollbar-thumb:hover {{ background-color: rgba(128,128,128,.5); }}
+  ::-webkit-scrollbar-track {{ background: transparent; }}
+  /* selection + focus rings */
+  ::selection {{ background: color-mix(in srgb, var(--mt-accent) 38%, transparent); }}
+  button:focus-visible, input:focus-visible, textarea:focus-visible, [role="button"]:focus-visible {{
+    outline: 2px solid var(--mt-accent) !important; outline-offset: 2px; }}
+  /* primary button glow + press */
+  .stButton > button[kind="primary"] {{ box-shadow: 0 4px 20px -4px color-mix(in srgb, var(--mt-accent) 60%, transparent); }}
+  .stButton > button:active {{ transform: translateY(0) scale(.98); }}
+  .stDownloadButton > button {{ transition: transform .12s ease, box-shadow .12s ease, border-color .15s ease; }}
+  .stDownloadButton > button:hover {{ transform: translateY(-1px); border-color: var(--mt-accent); }}
+  /* tabs: accent underline on active */
+  .stTabs [data-baseweb="tab"][aria-selected="true"] {{ color: var(--mt-accent) !important;
+    box-shadow: inset 0 -2px 0 var(--mt-accent); }}
+  .stTabs [data-baseweb="tab"]:hover {{ color: var(--mt-accent); }}
+  /* expanders + dataframes + links */
+  [data-testid="stExpander"] summary:hover {{ background: rgba(128,128,128,.06); border-radius: 12px; }}
+  [data-testid="stDataFrame"] tbody tr:hover {{ background: rgba(128,128,128,.07); }}
+  a {{ color: var(--mt-accent); }}
+  a:hover {{ text-decoration: underline; }}
+  [data-baseweb="popover"] [data-baseweb="menu"] {{ border-radius: 12px; }}
+  /* toggle switch accent */
+  [data-testid="stWidgetLabel"] {{ color: var(--mt-accent); }}
   @media (max-width: 768px) {{
     .mt-header {{ flex-direction: column; align-items: flex-start; gap: 4px; }}
     [data-testid="stMetric"] {{ padding: 10px 12px; }}
@@ -551,6 +625,17 @@ def _global_search() -> None:
 def _skeleton(n: int = 3, height: int = 60) -> None:
     for _ in range(n):
         st.skeleton(height=height)
+
+
+def _skeleton_cards(n: int = 2) -> None:
+    """Richer shimmer loader: skeleton cards with an avatar circle + lines."""
+    cards = "".join(
+        '<div class="mt-sk-card"><div class="mt-sk-avatar"></div>'
+        '<div class="mt-sk-body"><div class="mt-sk-line w80"></div>'
+        '<div class="mt-sk-line w60"></div><div class="mt-sk-line w40"></div></div></div>'
+        for _ in range(n)
+    )
+    st.markdown(f'<div class="mt-sk-wrap">{cards}</div>', unsafe_allow_html=True)
 
 
 # feature 41-45 infra ---------------------------------------------------------
@@ -1795,7 +1880,7 @@ def page_inventory() -> None:
     _page_header("📋", "Audio inventory", "Corpus files, validity, sample rates and durations.")
     inv = ROOT / "metadata" / "audio_inventory.json"
     if not inv.exists():
-        _skeleton(3)
+        _skeleton_cards(2)
         st.warning("No inventory yet — run `musictrain inventory`.")
         return
 
@@ -2826,7 +2911,7 @@ def page_listening() -> None:
     with st.spinner("Loading eval results…"):
         rows = load_results(ROOT)
     if not rows:
-        _skeleton(3)
+        _skeleton_cards(2)
         st.info("No eval results yet — run `musictrain eval` first.")
         return
 
@@ -3006,7 +3091,7 @@ def page_annotate() -> None:
         rows = load_results(ROOT)
     candidates = [r for r in rows if r.get("audio_path") and Path(r["audio_path"]).exists()]
     if not candidates:
-        _skeleton(3)
+        _skeleton_cards(2)
         st.info("No generated clips yet — run `musictrain eval` first.")
         return
 
@@ -3082,7 +3167,7 @@ def page_campaign() -> None:
 
     camp = lc.load_campaign(ROOT, name)
     if not camp:
-        _skeleton(3)
+        _skeleton_cards(2)
         st.info("Create a campaign (needs prior eval results) to begin rating.")
         return
 
@@ -3832,7 +3917,7 @@ def page_lyrics() -> None:
         beat_path = clean_dir / pick
 
     if beat_path is None or not beat_path.exists():
-        _skeleton(3)
+        _skeleton_cards(2)
         st.info("Upload a beat or pick one from data/clean to start writing to it.")
         return
 
@@ -4065,7 +4150,7 @@ def page_lyrics() -> None:
 
     # ---------------- display ---------------- #
     if result is None:
-        _skeleton(4)
+        _skeleton_cards(3)
         st.info("Write lyrics to generate a version against this beat.")
         return
 
@@ -4242,6 +4327,7 @@ def page_settings() -> None:
     if font != font_cur:
         st.session_state["mt_font"] = font
         st.rerun()
+    st.caption(f"Aa Bb Cc 123 — {font} preview")
 
     lang = st.selectbox(
         "🌐 Language", ["en", "es"],

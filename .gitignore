@@ -91,3 +91,4 @@ mlruns.db
 mlflow.db
 mlartifacts/
 .env
+metadata/session.json

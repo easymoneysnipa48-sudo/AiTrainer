@@ -168,10 +168,18 @@ def _theme_vars(light: bool) -> str:
 """
 
 
+_FONTS = {
+    "System": "'-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "Serif": "Georgia, 'Times New Roman', serif",
+    "Mono": "ui-monospace, 'SF Mono', Menlo, monospace",
+}
+
+
 def _theme_css() -> str:
     light = st.session_state.get("mt_theme") == "light"
     base = _LIGHT_CSS if light else _DARK_CSS
     accent = st.session_state.get("mt_accent", "#5b8cff")
+    font = _FONTS.get(st.session_state.get("mt_font", "System"), _FONTS["System"])
     vars_css = _theme_vars(light)
     return base + f"""
 <style>
@@ -181,6 +189,22 @@ def _theme_css() -> str:
   [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
   [data-testid="stMarkdownContainer"] {{ transition: background-color .3s ease, color .3s ease, border-color .3s ease; }}
   .stButton > button[kind="primary"] {{ background: linear-gradient(135deg, var(--mt-accent) 0%, var(--mt-accent-2) 100%); }}
+  /* font picker (feature: custom theming) */
+  :root, .stApp {{ --mt-font: {font}; }}
+  html, body, .stApp {{ font-family: var(--mt-font) !important; }}
+  /* shimmer skeletons + hover lift + player styles */
+  @keyframes mt-shimmer {{ 0% {{ background-position: -400px 0; }} 100% {{ background-position: 400px 0; }} }}
+  [data-testid="stSkeleton"] {{ background: linear-gradient(90deg, rgba(128,128,128,.10) 25%, rgba(128,128,128,.22) 37%, rgba(128,128,128,.10) 63%);
+    background-size: 400px 100%; animation: mt-shimmer 1.4s ease-in-out infinite; border-radius: 10px; }}
+  [data-testid="stMetric"] {{ transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease, background-color .3s ease; }}
+  [data-testid="stMetric"]:hover {{ transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.22); }}
+  .stButton > button {{ transition: transform .12s ease, box-shadow .12s ease, border-color .15s ease, background-color .3s ease; }}
+  .stButton > button:hover {{ transform: translateY(-1px); }}
+  .stTabs [data-baseweb="tab"] {{ transition: color .15s ease, background-color .15s ease; }}
+  .mt-player-wrap {{ border: 1px solid rgba(128,128,128,.25); border-radius: 14px; padding: 10px 12px; background: rgba(128,128,128,.06); }}
+  .mt-player-canvas {{ width: 100%; border-radius: 9px; cursor: pointer; background: #0b0e1a; display: block; }}
+  .mt-card-sec {{ color: #9db4ff; font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; margin: 14px 0 6px; }}
+  .mt-card-line {{ font-size: 1.05rem; line-height: 1.7; }}
   /* uikit components */
   .mt-chip {{ display:inline-block; font-size:.72rem; color:#9aa3c0;
     border:1px solid rgba(255,255,255,.12); border-radius:999px; padding:2px 9px; margin:2px 4px 2px 0; }}
@@ -272,6 +296,17 @@ def _toggle_theme() -> None:
     )
     if _ACCENTS[pick] != st.session_state.get("mt_accent"):
         _apply_accent(_ACCENTS[pick])
+
+    font_cur = st.session_state.get("mt_font", "System")
+    font_pick = st.selectbox(
+        "✒️ Font", list(_FONTS.keys()),
+        index=list(_FONTS.keys()).index(font_cur) if font_cur in _FONTS else 0,
+        key="mt_font_side",
+    )
+    if font_pick != font_cur:
+        st.session_state["mt_font"] = font_pick
+        for k in ("set_font_pick",):
+            st.session_state.pop(k, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -423,6 +458,38 @@ def _sidebar_stats(cfg: Config) -> None:
             st.caption("🏆 " + data["leaderboard"][0]["checkpoint"].split("/")[-1]
                        + f" · {data['leaderboard'][0]['score']:.2f}")
 
+    # feature 12 — tiny CLAP trend sparkline in the sidebar
+    _sidebar_sparkline()
+
+
+def _sidebar_sparkline() -> None:
+    """Feature 12 — mini CLAP trend over recent eval rows."""
+    import altair as alt
+
+    ev = ROOT / "metadata" / "eval_results.jsonl"
+    if not ev.exists():
+        return
+    pts = []
+    for ln in ev.open():
+        try:
+            r = json.loads(ln)
+            if r.get("clap_score") is not None:
+                pts.append({"run": len(pts), "clap": float(r["clap_score"])})
+        except Exception:  # noqa: BLE001
+            continue
+    if len(pts) < 2:
+        return
+    df = pd.DataFrame(pts)
+    chart = (
+        alt.Chart(df)
+        .mark_line(color="#7c5cff", point=False)
+        .encode(x=alt.X("run:Q", axis=None), y=alt.Y("clap:Q", scale=alt.Scale(zero=False), axis=None),
+                tooltip=["run", "clap"])
+        .properties(height=46)
+    )
+    st.altair_chart(chart, width="stretch")
+    st.caption("CLAP trend (last eval rows)")
+
 
 def _quicknav() -> None:
     """Quick-jump buttons for the most-used pages — feature 2."""
@@ -529,6 +596,767 @@ def _beep() -> None:
             height=0,
         )
     except Exception:  # noqa: BLE001 - sound is best-effort
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# pro player (features 1/2/13) — canvas waveform/spec + click-to-seek + live FFT
+# --------------------------------------------------------------------------- #
+def _pro_player(path: str, key: str, mode: str = "wave") -> None:
+    """Canvas audio player: click-to-seek waveform or spectrogram, live FFT bars."""
+    import base64
+
+    import numpy as np
+
+    try:
+        import librosa
+
+        y, sr = librosa.load(str(path), sr=16000, mono=True)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"player unavailable: {exc}")
+        return
+    try:
+        b64 = base64.b64encode(Path(path).read_bytes()).decode()
+    except Exception:  # noqa: BLE001
+        b64 = ""
+
+    env = (np.abs(y[:: max(1, len(y) // 400)]) * 400).clip(0, 255).astype(int).tolist()
+    dur = len(y) / sr
+
+    spec_img: list = []
+    if mode != "wave":
+        win, hop_s, n_bins = 1024, 512, 24
+        cols = []
+        for start in range(0, len(y) - win, hop_s):
+            mag = np.abs(np.fft.rfft(y[start:start + win] * np.hanning(win)))
+            seg = int(len(mag) / n_bins)
+            cols.append([float(mag[k * seg:(k + 1) * seg].max()) for k in range(n_bins)])
+            if len(cols) >= 96:
+                break
+        if cols:
+            arr = np.array(cols).T
+            spec_img = (arr / (arr.max() or 1.0) * 255).astype(int).tolist()
+
+    _JS = (
+        "<div class='mt-player-wrap'>"
+        "<audio id='mt-a-KEY' src='data:audio/wav;base64,B64' preload='metadata'></audio>"
+        "<canvas id='mt-c-KEY' class='mt-player-canvas' height='120'></canvas>"
+        "<div style='display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap;'>"
+        "<button id='mt-p-KEY' style='border-radius:9px;border:1px solid rgba(255,255,255,.2);"
+        "background:rgba(255,255,255,.08);color:#eef1fb;padding:4px 14px;cursor:pointer;'>▶</button>"
+        "<span id='mt-t-KEY' style='color:#9aa3c0;font-size:.78rem;font-family:ui-monospace,monospace;'></span>"
+        "<label style='color:#9aa3c0;font-size:.78rem;margin-left:auto;cursor:pointer;'>"
+        "<input type='checkbox' id='mt-f-KEY'> ⚡ Live FFT</label></div>"
+        "<canvas id='mt-fc-KEY' class='mt-player-canvas' height='42' style='display:none;margin-top:6px;'></canvas>"
+        "</div><script>"
+        "(function(){"
+        "var a=document.getElementById('mt-a-KEY'),cv=document.getElementById('mt-c-KEY'),c2=cv.getContext('2d');"
+        "var env=ENV,spec=SPEC,dur=DUR;"
+        "function draw(){"
+        "var w=cv.width=cv.clientWidth*2,h=cv.height=120;c2.fillStyle='#0b0e1a';c2.fillRect(0,0,w,h);"
+        "var pct=a.currentTime/dur;"
+        "if(spec.length){"
+        "var bw=w/spec[0].length,bh=h/spec.length;"
+        "for(var c=0;c<spec[0].length;c++){for(var r=0;r<spec.length;r++){"
+        "var v=spec[r][c];c2.fillStyle='rgb('+Math.round(v)+','+Math.round(v*0.6)+',255)';"
+        "c2.fillRect(c*bw,r*bh,bw+0.5,bh+0.5);}}"
+        "}else{"
+        "var n=env.length,bw=w/n;"
+        "for(var i=0;i<n;i++){var hh=env[i]/255*h*0.9;c2.fillStyle='#5b8cff';c2.fillRect(i*bw,h-hh,bw+0.5,hh);}"
+        "}"
+        "c2.fillStyle='rgba(255,255,255,.85)';c2.fillRect(pct*w-1,0,2,h);}"
+        "cv.addEventListener('click',function(e){var r=cv.getBoundingClientRect();a.currentTime=(e.clientX-r.left)/r.width*dur;draw();});"
+        "document.getElementById('mt-p-KEY').addEventListener('click',function(){if(a.paused){a.play();}else{a.pause();}});"
+        "a.addEventListener('timeupdate',function(){var m=Math.floor(a.currentTime/60),s=Math.floor(a.currentTime%60);"
+        "document.getElementById('mt-t-KEY').textContent=m+':'+(s<10?'0':'')+s+' / '+Math.floor(dur)+':00';draw();});"
+        "var routed=false;"
+        "document.getElementById('mt-f-KEY').addEventListener('change',function(e){"
+        "var ffc=document.getElementById('mt-fc-KEY');ffc.style.display=e.target.checked?'block':'none';if(!e.target.checked){return;}"
+        "var AC=window.AudioContext||window.webkitAudioContext;if(!AC){return;}"
+        "if(!routed){var ac=new AC(),src=ac.createMediaElementSource(a),an=ac.createAnalyser();an.fftSize=128;"
+        "src.connect(an);an.connect(ac.destination);routed=true;}"
+        "var w=ffc.width=ffc.clientWidth*2,h=ffc.height=42,data=new Uint8Array(128);"
+        "(function loop(){if(ffc.style.display==='none'){return;}requestAnimationFrame(loop);"
+        "an.getByteFrequencyData(data);var f2=ffc.getContext('2d');f2.fillStyle='#0b0e1a';f2.fillRect(0,0,w,h);var bw=w/data.length;"
+        "for(var i=0;i<data.length;i++){f2.fillStyle='rgb(91,140,255)';f2.fillRect(i*bw,h-data[i]/255*h,bw,data[i]/255*h);}"
+        "})();});"
+        "draw();"
+        "})();</script>"
+    )
+    html = (
+        _JS.replace("KEY", key)
+        .replace("B64", b64)
+        .replace("ENV", json.dumps(env))
+        .replace("SPEC", json.dumps(spec_img))
+        .replace("DUR", repr(dur))
+    )
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(html, height=236)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"player unavailable: {exc}")
+
+
+def _fullscreen_audio(path: str, key: str) -> None:
+    """Feature 11 — fullscreen review of a clip with native controls."""
+    import base64
+
+    try:
+        b64 = base64.b64encode(Path(path).read_bytes()).decode()
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"fullscreen unavailable: {exc}")
+        return
+    html = (
+        f'<audio id="mt-fs-{key}" src="data:audio/wav;base64,{b64}" controls style="width:100%;"></audio>'
+        f'<script>(function(){{var a=document.getElementById("mt-fs-{key}");'
+        f'var b=document.createElement("button");b.textContent="⛶ Fullscreen review";'
+        f'b.style.cssText="width:100%;margin-top:6px;padding:6px;border-radius:9px;'
+        f'border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#eef1fb;cursor:pointer;";'
+        f'b.onclick=function(){{var el=a.parentElement;if(el.requestFullscreen)el.requestFullscreen();'
+        f'else if(el.webkitRequestFullscreen)el.webkitRequestFullscreen();}};'
+        f'a.parentElement.appendChild(b);}})();</script>'
+    )
+    try:
+        import streamlit.components.v1 as components
+
+        components.html(html, height=120)
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"fullscreen unavailable: {exc}")
+
+
+def _tempo_tap(key: str = "tap") -> float:
+    """Feature 8 — tap-along BPM estimator (median interval)."""
+    taps = st.session_state.setdefault(f"mt_taps_{key}", [])
+    c1, c2 = st.columns([1, 2])
+    if c1.button("👆 Tap", key=f"tap_btn_{key}", width="stretch"):
+        now = time.time()
+        if taps and now - taps[-1] > 2.5:
+            taps.clear()
+        taps.append(now)
+        st.session_state[f"mt_taps_{key}"] = taps[-8:]
+        st.rerun()
+    if len(taps) >= 2:
+        import statistics
+
+        iv = [b - a for a, b in zip(taps, taps[1:]) if b - a > 0.15]
+        if iv:
+            bpm = max(40.0, min(240.0, statistics.median(60.0 / i for i in iv)))
+            c2.metric("Tempo (tapped)", f"{bpm:.1f} BPM", f"{len(taps)} taps")
+            return bpm
+    c2.caption("Tap along with the beat — the median interval gives your BPM.")
+    return 0.0
+
+
+def _segment_plays(audio_path: str, segs: list, key: str) -> None:
+    """Feature 20 — pick a structure segment and play it from its start time."""
+    if not segs:
+        st.caption("no segments detected")
+        return
+    opts = {}
+    for i, s in enumerate(segs):
+        start = float(s.get("start") or 0.0)
+        dur = float(s.get("duration") or 0.0)
+        opts[f"#{i} {s.get('role', '?')} · {start:.1f}s (+{dur:.0f}s)"] = s
+    pick = st.selectbox("▶ Play a section", list(opts), key=f"segpick_{key}")
+    s = opts[pick]
+    start = float(s.get("start") or 0.0)
+    st.audio(audio_path, start_time=start)
+    st.caption(f"role **{s.get('role', '?')}** · starts {start:.1f}s · {float(s.get('duration') or 0):.1f}s long")
+
+
+def _segment_inspector() -> None:
+    """Feature 21 — inspect, play, rename and delete segment files on disk."""
+    seg_dir = ROOT / "data" / "segments"
+    if not seg_dir.exists():
+        st.caption("no data/segments directory yet")
+        return
+    files = sorted(seg_dir.glob("*.wav"))
+    if not files:
+        st.caption("no segment files on disk")
+        return
+    st.caption(f"{len(files)} segment file(s) on disk")
+    pick = st.selectbox("Segment", [f.name for f in files], key="seg_insp_pick")
+    p = seg_dir / pick
+    st.audio(str(p))
+    c1, c2 = st.columns(2)
+    new_name = c1.text_input("Rename to", value=pick, key="seg_insp_rename")
+    if c1.button("✏️ Rename", key="seg_insp_ren_btn", width="stretch") and new_name and new_name != pick:
+        p.rename(seg_dir / new_name)
+        st.toast(f"renamed → {new_name}")
+        st.rerun()
+    if c2.button("🗑 Delete", key="seg_insp_del_btn", width="stretch"):
+        p.unlink(missing_ok=True)
+        st.toast("segment deleted")
+        st.rerun()
+
+
+def _provenance_view() -> None:
+    """Feature 46 — every segment traces back to its source beat."""
+    segs = _read_json("segments.json")
+    if isinstance(segs, dict):
+        segs = segs.get("segments", [])
+    if not segs:
+        st.caption("no segment records — run `segment` first")
+        return
+    rows = []
+    for s in segs:
+        src = s.get("source") or s.get("source_file") or ""
+        rows.append({
+            "segment": Path(str(s.get("path") or s.get("file") or "?")).name,
+            "source beat": Path(str(src)).name if src else "?",
+            "start (s)": s.get("start"),
+            "duration (s)": s.get("duration"),
+            "role": s.get("role", ""),
+        })
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption(f"{len(rows)} segment(s) · every row links to its source beat in data/clean")
+
+
+# --------------------------------------------------------------------------- #
+# lyrics tools (features 22/23/26/28/29/30)
+# --------------------------------------------------------------------------- #
+_RHYME_COLORS = ["#5b8cff", "#ff5c8a", "#2fbf71", "#ffa53c", "#c084fc", "#22c1dc", "#f472b6", "#a3e635"]
+
+
+def _rhyme_key(word: str) -> str:
+    w = word.lower().strip(".,!?;:'\"()[]-—_")
+    if not w:
+        return ""
+    v = "aeiouy"
+    idx = max([i for i, ch in enumerate(w) if ch in v], default=-1)
+    if idx == -1:
+        return w[-2:]
+    return (w[idx:].rstrip("estd") or w[-1])
+
+
+def _rhyme_preview(text: str) -> None:
+    """Feature 23 — color-code end-of-line rhymes in the editor."""
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        st.caption("type lines to see rhyme groups")
+        return
+    groups: dict = {}
+    order: list = []
+    for ln in lines:
+        words = ln.split()
+        k = _rhyme_key(words[-1]) if words else ""
+        if k and k not in groups:
+            groups[k] = _RHYME_COLORS[len(order) % len(_RHYME_COLORS)]
+            order.append(k)
+    out = []
+    for ln in lines:
+        words = ln.split()
+        if words:
+            last = words[-1]
+            col = groups.get(_rhyme_key(last), "#9aa3c0")
+            out.append(html_escape(" ".join(words[:-1]))
+                       + f' <span style="color:{col};font-weight:700;">{html_escape(last)}</span>')
+        else:
+            out.append(html_escape(ln))
+    st.markdown("<br>".join(out), unsafe_allow_html=True)
+    st.caption(f"🎨 {len(order)} rhyme group(s) — end-words sharing a color rhyme")
+
+
+def _syllable_stats(text: str) -> None:
+    """Feature 22 — live per-line syllable counts while editing."""
+    from musictrain.lyrictools import count_syllables
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return
+    counts = [count_syllables(ln) for ln in lines]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Lines", len(lines))
+    c2.metric("Avg syll/line", f"{sum(counts) / len(counts):.1f}")
+    c3.metric("Max syll", max(counts))
+    c4.metric("Total syll", sum(counts))
+    chips = " ".join(f'<span class="mt-chip">{c} syll</span>' for c in counts[:28])
+    st.markdown(chips, unsafe_allow_html=True)
+
+
+_STYLE_PRESETS = {
+    "🔥 Aggressive banger": {"artist": "dababy", "mood": "aggressive", "topic": "clout",
+                            "weights": {"topic": 1.0, "mood": 1.4, "flow": 1.2, "ad_libs": 1.0}},
+    "🌧️ Emotional pain": {"artist": "lil durk", "mood": "emotional", "topic": "pain",
+                          "weights": {"topic": 1.2, "mood": 1.4, "flow": 0.8, "ad_libs": 0.4}},
+    "💰 Money flex": {"artist": "future", "mood": "confident", "topic": "money",
+                       "weights": {"topic": 1.0, "mood": 1.0, "flow": 1.0, "ad_libs": 0.8}},
+    "🕊️ Melodic sad": {"artist": "juice wrld", "mood": "melancholic", "topic": "heartbreak",
+                        "weights": {"topic": 1.3, "mood": 1.2, "flow": 0.9, "ad_libs": 0.3}},
+    "🚀 Trap come-up": {"artist": "gunna", "mood": "smooth", "topic": "come-up",
+                        "weights": {"topic": 1.1, "mood": 1.0, "flow": 1.1, "ad_libs": 0.7}},
+    "👑 King energy": {"artist": "kanye west", "mood": "confident", "topic": "boss",
+                       "weights": {"topic": 1.2, "mood": 1.1, "flow": 0.9, "ad_libs": 0.5}},
+}
+
+
+_SCALES = {"major": [0, 2, 4, 5, 7, 9, 11], "minor": [0, 2, 3, 5, 7, 8, 10]}
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def _melody_hints(key: str) -> None:
+    """Feature 28 — singable scale notes for the detected key."""
+    import re as _re
+
+    m = _re.match(r"([A-Ga-g][#b]?)\s+(major|minor|m)", key or "")
+    if m:
+        root_s, kind = m.group(1), ("minor" if m.group(2) == "m" else m.group(2))
+    else:
+        m2 = _re.match(r"([A-Ga-g][#b]?)", key or "")
+        root_s, kind = (m2.group(1) if m2 else "A"), "minor"
+    root_s = root_s[0].upper() + (root_s[1:] if len(root_s) > 1 else "")
+    root = _NOTE_NAMES.index(root_s) if root_s in _NOTE_NAMES else 9
+    notes = [_NOTE_NAMES[(root + s) % 12] for s in _SCALES.get(kind, _SCALES["minor"])]
+    chips = " ".join(f'<span class="mt-chip"><b>{n}</b></span>' for n in notes)
+    st.markdown(f"🎵 {kind} scale — singable notes: {chips}", unsafe_allow_html=True)
+    st.caption("hint: anchor vocal melodies on these notes; the root and 5th are the safest targets.")
+
+
+def _song_assembler(result) -> None:
+    """Feature 29 — assemble sections into a song order, then copy/download."""
+    sections = result.sections
+    roles = [s["role"] for s in sections]
+    order = st.multiselect("Section order (song assembly)", roles, default=roles, key="ly_assembly")
+    if not order:
+        st.caption("pick at least one section")
+        return
+    parts = []
+    for role in order:
+        sec = next((s for s in sections if s["role"] == role), None)
+        if sec is None:
+            continue
+        parts.append(f"[{role}] {sec.get('artist', result.artist)}")
+        parts.extend(sec.get("lines", []))
+    full = "\n".join(parts)
+    st.text(full)
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "⬇ Assembly .txt", full, file_name=f"assembly_{result.artist}_{result.seed}.txt",
+        mime="text/plain", key="ly_assembly_dl", width="stretch",
+    )
+    _copy_button(full, "ly_assembly_copy")
+
+
+def _lyric_card_html(result) -> str:
+    """Feature 30 — Instagram-style lyric card as a standalone HTML file."""
+    parts = []
+    for sec in result.sections:
+        parts.append(f'<div class="mt-card-sec">{html_escape(str(sec["role"]).upper())} — {html_escape(str(sec.get("artist", result.artist)))}</div>')
+        for ln in sec.get("lines", []):
+            parts.append(f'<div class="mt-card-line">{html_escape(str(ln))}</div>')
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        f"<title>{html_escape(str(result.artist))} — lyric card</title><style>"
+        "body{margin:0;font-family:Georgia,serif;background:#0f1220;display:flex;justify-content:center;}"
+        ".card{max-width:520px;width:92vw;margin:24px auto;padding:44px 30px;border-radius:22px;"
+        "background:linear-gradient(160deg,#151b30 0%,#0e1120 60%,#1a1028 100%);"
+        "border:1px solid rgba(255,255,255,.12);box-shadow:0 18px 50px rgba(0,0,0,.5);}"
+        ".mt-card-sec{color:#9db4ff;font-size:.72rem;letter-spacing:.2em;text-transform:uppercase;margin:16px 0 8px;}"
+        ".mt-card-line{color:#f2f4fb;font-size:1.06rem;line-height:1.75;}"
+        "</style></head><body><div class=\"card\">" + "".join(parts) + "</div></body></html>"
+    )
+
+
+def _lyric_card_download(result) -> None:
+    st.download_button(
+        "🖼 Lyric card (.html)", _lyric_card_html(result),
+        file_name=f"card_{result.artist}_{result.seed}.html", mime="text/html",
+        key="ly_card_dl", width="stretch",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# training / eval / ops helpers (features 31/32/33/35/37/38/39)
+# --------------------------------------------------------------------------- #
+def _mlflow_train_runs(cfg):
+    try:
+        from musictrain.experiments import _configure
+
+        ml = _configure(cfg)
+        if ml is None:
+            return pd.DataFrame()
+        exp = ml.get_experiment_by_name(cfg.mlflow.experiment_name)
+        if exp is None:
+            return pd.DataFrame()
+        return ml.search_runs(experiment_ids=[exp.experiment_id])
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
+@st.fragment(run_every=5)
+def _live_training(cfg) -> None:
+    """Feature 31 — auto-refreshing training telemetry."""
+    df = _mlflow_train_runs(cfg)
+    c = st.columns(4)
+    if df.empty:
+        c[0].metric("MLflow runs", 0)
+        c[1].metric("last train loss", "—")
+        c[2].metric("best eval loss", "—")
+        c[3].metric("recent job", "—")
+    else:
+        c[0].metric("MLflow runs", len(df))
+        tr = df[df.get("tags.task") == "train"] if "tags.task" in df else df
+        tloss = tr.get("metrics.train_loss") if "metrics.train_loss" in tr else None
+        eloss = tr.get("metrics.eval_loss") if "metrics.eval_loss" in tr else None
+        c[1].metric("last train loss",
+                    f"{pd.to_numeric(tloss, errors='coerce').dropna().iloc[-1]:.3f}"
+                    if tloss is not None and pd.to_numeric(tloss, errors="coerce").notna().any() else "—")
+        c[2].metric("best eval loss",
+                    f"{pd.to_numeric(eloss, errors='coerce').dropna().min():.3f}"
+                    if eloss is not None and pd.to_numeric(eloss, errors="coerce").notna().any() else "—")
+        recent = _log_tail(1)
+        c[3].metric("recent job", (recent[14:60] if recent.startswith(("▶", "✓", "✗", "■")) else "—"))
+    tail = [ln for ln in _log_tail(30).splitlines() if any(k in ln for k in ("step", "loss", "adapter", "Epoch"))][-6:]
+    st.caption("live tail (auto-refresh 5s)")
+    if tail:
+        st.code("\n".join(tail), language=None)
+
+
+def _restore_best(cfg) -> None:
+    """Feature 32 — copy the best adapter (lowest eval loss) to checkpoints/best."""
+    import shutil
+
+    cands = []
+    lr = ROOT / "checkpoints" / "lyrics"
+    if lr.exists():
+        for d in sorted(lr.glob("*")):
+            if not d.is_dir():
+                continue
+            ts = d / "trainer_state.json"
+            try:
+                el = float(json.loads(ts.read_text()).get("eval_loss") or float("inf"))
+                cands.append((el, str(d)))
+            except Exception:  # noqa: BLE001
+                continue
+    audio = ROOT / "adapters"
+    if audio.exists() and any(f.is_file() for f in audio.iterdir()):
+        cands.append((float("inf"), str(audio)))
+    if not cands:
+        st.info("No adapters yet — train `musictrain finetune` or `train-lyrics` first.")
+        return
+    cands.sort(key=lambda kv: kv[0])
+    el, src = cands[0]
+    dst = ROOT / "checkpoints" / "best"
+    dst.mkdir(parents=True, exist_ok=True)
+    for f in dst.glob("*"):
+        if f.is_file():
+            f.unlink()
+    if Path(src).is_dir():
+        for f in Path(src).glob("*"):
+            if f.is_file():
+                shutil.copy2(f, dst / f.name)
+    st.success(f"Restored best adapter ({el:.3f} eval loss) → checkpoints/best")
+    st.code(str(dst), language=None)
+
+
+def _checkpoint_gallery(cfg) -> None:
+    """Feature 33 — browse MLflow runs with metrics + one-click adoption."""
+    from musictrain.experiments import search_runs
+
+    df = search_runs(cfg)
+    if df.empty:
+        st.info("No MLflow runs yet — run an eval or finetune first.")
+        return
+    cols = [c for c in ("run_id", "name", "task", "model", "device", "clap_score", "deviation", "duration_s", "seed") if c in df]
+    st.dataframe(df[cols].head(40), width="stretch", hide_index=True)
+    st.caption(f"{len(df)} run(s) · {len(df[df.get('task') == 'eval'] if 'task' in df else df)} eval")
+    models = [m for m in df["model"].dropna().unique() if str(m).strip()] if "model" in df else []
+    if not models:
+        st.caption("no model ids logged yet — run an eval first")
+        return
+    pick = st.selectbox("Adopt a model for the Generate page", [""] + sorted(models), key="ckpt_gallery_pick")
+    if pick:
+        st.session_state["mt_model_hint"] = pick
+        st.session_state["nav"] = "🎛️ Generate"
+        st.toast(f"{pick} → Generate page")
+        st.rerun()
+
+
+def _eval_drilldown(rows: list) -> None:
+    """Feature 35 — drill into failing prompts with a fix suggestion."""
+    fails = [
+        r for r in rows
+        if r.get("status") != "ok"
+        or (r.get("detected_bpm") and r.get("bpm_target")
+            and abs(float(r["detected_bpm"]) - float(r["bpm_target"])) > 8.0)
+    ]
+    if not fails:
+        st.success("No failing prompts — every clip is in tolerance.")
+        return
+    opts = {
+        f"#{i} {r.get('section', '?')} {r.get('bpm_target')}BPM → {r.get('detected_bpm', '?')} (dev {r.get('deviation', '?')})": r
+        for i, r in enumerate(fails)
+    }
+    pick = st.selectbox("Failing prompt", list(opts), key="ev_drill_pick")
+    r = opts[pick]
+    st.write(r.get("prompt") or r.get("description") or "")
+    c1, c2 = st.columns(2)
+    c1.metric("Target BPM", r.get("bpm_target"))
+    c2.metric("Detected BPM", r.get("detected_bpm", "—"))
+    dev = float(r.get("deviation") or 0.0)
+    target = float(r.get("bpm_target") or 0.0)
+    det = float(r.get("detected_bpm") or 0.0)
+    if target and det:
+        ratio = det / target
+        if ratio > 1.5:
+            sug = "detected ≈ target × 2 — try a slower/denser tempo anchor in the prompt"
+        elif ratio < 0.66:
+            sug = "detected ≈ target ÷ 2 — try an explicit faster phrasing or fewer long notes"
+        else:
+            sug = f"off by {dev:.1f} BPM — tighten the tempo phrasing (e.g. 'exactly {target:g} BPM')"
+        st.info(f"💡 {sug}")
+    ap = r.get("audio_path")
+    if ap and Path(ap).exists():
+        st.audio(str(ap))
+
+
+@st.fragment(run_every=10)
+def _adapter_watch() -> None:
+    """Feature 37 — detect new adapters and prompt a gate run."""
+    adapters = ROOT / "adapters"
+    if not adapters.exists():
+        return
+    mtime = max((f.stat().st_mtime for f in adapters.glob("*") if f.is_file()), default=0.0)
+    last = st.session_state.get("mt_adapter_mtime", 0.0)
+    if last == 0.0:
+        st.session_state["mt_adapter_mtime"] = mtime
+        st.caption("👀 Watching adapters/ — new adapters prompt a gate run here.")
+        return
+    if mtime > last:
+        st.warning(f"🆕 New adapter in adapters/ ({time.strftime('%H:%M', time.localtime(mtime))}) — refresh the leaderboard.")
+        if st.button("▶ Run eval gate now", key="ev_watch_run"):
+            st.session_state["mt_adapter_mtime"] = mtime
+            st.session_state["ev_gate_requested"] = True
+            st.rerun()
+    else:
+        st.session_state["mt_adapter_mtime"] = mtime
+        st.caption("👀 Watching adapters/ — no new adapters since last check.")
+
+
+def _prompt_set_builder() -> None:
+    """Feature 38 — edit the eval prompt set in the UI."""
+    evp = ROOT / "metadata" / "eval_prompts.jsonl"
+    current = evp.read_text() if evp.exists() else ""
+    edited = st.text_area(
+        "eval_prompts.jsonl — one JSON object per line", value=current,
+        height=200, key="ev_builder_edit",
+        placeholder='{"id": "chorus_140_A#min", "section": "chorus", "genre": "melodic trap", "bpm": 140, "key": "A# minor", "mood": "dark", "instruments": "piano, 808 bass", "energy": 0.8, "seed": 42, "description": "chorus, 140 BPM, ..."}',
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("💾 Save prompt set", key="ev_builder_save", width="stretch"):
+        lines = [ln for ln in edited.splitlines() if ln.strip()]
+        bad = [ln for ln in lines if not _try_json(ln)]
+        if bad:
+            st.error(f"{len(bad)} invalid JSON line(s) — fix and retry")
+        else:
+            evp.parent.mkdir(parents=True, exist_ok=True)
+            evp.write_text(edited)
+            st.toast(f"Saved {len(lines)} prompt(s) → metadata/eval_prompts.jsonl")
+            st.rerun()
+    if c2.button("🔄 Rebuild standard set", key="ev_builder_rebuild", width="stretch"):
+        from musictrain.evalset import build
+
+        build(ROOT, force=True)
+        st.toast("Standard eval set rebuilt")
+        st.rerun()
+    st.caption("fields: id · section · genre · bpm · key · mood · instruments · energy · seed · description")
+
+
+def _try_json(line: str):
+    try:
+        return json.loads(line)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _run_cost_table(cfg) -> None:
+    """Feature 39 — per-run cost/elapsed breakdown from MLflow."""
+    from musictrain.experiments import search_runs
+
+    df = search_runs(cfg)
+    if df.empty:
+        st.caption("No MLflow runs yet — costs appear after the first eval/finetune.")
+        return
+    show = df.copy()
+    if "duration_s" in show:
+        show["duration_s"] = pd.to_numeric(show["duration_s"], errors="coerce")
+    cols = [c for c in ("run_id", "name", "task", "model", "device", "duration_s", "clap_score") if c in show]
+    st.dataframe(show[cols].head(30), width="stretch", hide_index=True)
+    if "duration_s" in show and show["duration_s"].notna().any():
+        st.caption(f"⏱ total logged time: {show['duration_s'].sum():.1f}s across {len(show)} run(s)")
+
+
+# --------------------------------------------------------------------------- #
+# data helpers (features 42/44/45/49/50)
+# --------------------------------------------------------------------------- #
+def _dataset_browser() -> None:
+    """Feature 42 — filter labeled segments + batch re-label in place."""
+    lab = ROOT / "metadata" / "labels.csv"
+    if not lab.exists():
+        st.caption("no labels.csv yet — run `beatlabels` or scaffold one on the Labels page")
+        return
+    df = pd.read_csv(lab)
+    man = ROOT / "metadata" / "manifest.jsonl"
+    merged = df.copy()
+    if man.exists():
+        try:
+            mdf = pd.DataFrame([json.loads(ln) for ln in man.read_text().splitlines() if ln.strip()])
+            if {"path", "bpm", "key"}.issubset(mdf.columns):
+                mdf = mdf.copy()
+                mdf["stem"] = mdf["path"].apply(lambda p: Path(str(p)).stem)
+                df2 = df.copy()
+                df2["stem"] = df2["source_id"].astype(str)
+                merged = df2.merge(mdf[["stem", "bpm", "key"]], on="stem", how="left")
+        except Exception:  # noqa: BLE001
+            merged = df.copy()
+
+    f1, f2, f3, f4 = st.columns(4)
+    genres = sorted({str(v) for v in merged["genre"].dropna().astype(str) if str(v).strip()})
+    moods = sorted({str(v) for v in merged["mood"].dropna().astype(str) if str(v).strip()})
+    g = f1.multiselect("Genre", genres, key="dsb_genre")
+    m = f2.multiselect("Mood", moods, key="dsb_mood")
+    secs = sorted({str(v) for v in merged["section"].dropna().astype(str) if str(v).strip()})
+    s = f3.multiselect("Section", secs, key="dsb_sec")
+    q = f4.text_input("Search source_id", key="dsb_q")
+
+    view = merged.copy()
+    if g:
+        view = view[view["genre"].astype(str).apply(lambda v: any(x in v for x in g))]
+    if m:
+        view = view[view["mood"].astype(str).apply(lambda v: any(x in v for x in m))]
+    if s:
+        view = view[view["section"].astype(str).isin(s)]
+    if q.strip():
+        view = view[view["source_id"].astype(str).str.contains(q.strip(), case=False)]
+
+    st.caption(f"{len(view)}/{len(merged)} labeled segment(s) match")
+    st.dataframe(view, width="stretch", hide_index=True)
+
+    sel = st.multiselect("Batch re-label rows", view.index.tolist(), key="dsb_sel",
+                         format_func=lambda i: f"{i}: {view.loc[i, 'source_id']}")
+    if sel:
+        with st.popover("Apply values", width="stretch"):
+            b_mood = st.text_input("mood (pipe-separated)", "", key="dsb_bm")
+            b_inst = st.text_input("instruments (pipe-separated)", "", key="dsb_bi")
+            b_sec = st.selectbox("section", [""] + secs, key="dsb_bs")
+            if st.button("Apply & save", type="primary", key="dsb_apply") and sel:
+                for i in sel:
+                    if b_mood:
+                        merged.loc[i, "mood"] = b_mood
+                    if b_inst:
+                        merged.loc[i, "instruments"] = b_inst
+                    if b_sec:
+                        merged.loc[i, "section"] = b_sec
+                merged.to_csv(lab, index=False)
+                st.toast(f"Re-labeled {len(sel)} row(s) → labels.csv")
+                st.rerun()
+
+
+def _label_check_ui() -> None:
+    """Feature 44 — vocabulary consistency check with one click."""
+    lab = ROOT / "metadata" / "labels.csv"
+    if not lab.exists():
+        st.info("no labels.csv to check yet")
+        return
+    if st.button("🔍 Run consistency check", key="lab_check_run"):
+        from musictrain.labels import check
+
+        st.session_state["lab_issues"] = check(lab)
+    issues = st.session_state.get("lab_issues")
+    if issues is None:
+        st.caption(
+            "Checks the vocabulary: unknown genre/section/mood/instrument terms, "
+            "missing source_id/license/description, and duplicate ids."
+        )
+        return
+    if not issues:
+        st.success("labels.csv is fully consistent with the vocabulary ✓")
+        return
+    st.warning(f"{len(issues)} issue(s)")
+    st.dataframe(pd.DataFrame({"issue": issues}), width="stretch", hide_index=True)
+
+
+def _dataset_export_import() -> None:
+    """Feature 45 — one-click dataset zip export + import."""
+    import io
+    import zipfile
+
+    st.markdown("#### 📦 Dataset export / import")
+    e1, e2 = st.columns(2)
+    with e1:
+        if st.button("⬇ Export dataset (.zip)", key="set_ds_export", width="stretch"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for rel in ("metadata/labels.csv", "metadata/manifest.jsonl", "metadata/segments.json"):
+                    p = ROOT / rel
+                    if p.exists():
+                        z.write(p, rel)
+                for split in ("train", "val", "test"):
+                    d = ROOT / "data" / split
+                    if d.exists():
+                        for f in sorted(d.glob("*.wav"))[:100]:
+                            z.write(f, f"data/{split}/{f.name}")
+            st.session_state["mt_ds_zip"] = buf.getvalue()
+        z = st.session_state.get("mt_ds_zip")
+        if z:
+            st.download_button(
+                "💾 Download dataset.zip", data=z, file_name="dataset.zip",
+                mime="application/zip", key="set_ds_dl", width="stretch",
+            )
+    with e2:
+        zf = st.file_uploader("Import dataset.zip (labels/manifest/segments + splits)", type=["zip"], key="set_ds_imp")
+        if zf and st.button("📂 Import & extract", key="set_ds_imp_btn", width="stretch"):
+            with zipfile.ZipFile(io.BytesIO(zf.getbuffer())) as z:
+                z.extractall(ROOT)
+            st.toast("Dataset imported → data/ + metadata/")
+            st.rerun()
+
+
+def _crash_panel() -> None:
+    """Feature 50 — recent exceptions with stack traces + copy."""
+    cands = [ROOT / "logs" / "musictrain.log", ROOT / "metadata" / "musictrain.log"]
+    text = ""
+    for c in cands:
+        if c.exists():
+            t = c.read_text()
+            if len(t) > len(text):
+                text = t
+    if not text:
+        st.caption("no log file yet — errors will surface here")
+        return
+    blocks, cur = [], []
+    for ln in text.splitlines():
+        if "Traceback" in ln or "ERROR" in ln:
+            cur = [ln]
+        elif cur:
+            cur.append(ln)
+            if not ln.strip() and len(cur) > 3:
+                blocks.append("\n".join(cur))
+                cur = []
+    if cur:
+        blocks.append("\n".join(cur))
+    blocks = blocks[-5:]
+    if not blocks:
+        st.caption("no errors/tracebacks in the log — clean run")
+        return
+    st.warning(f"{len(blocks)} recent error block(s)")
+    for b in blocks:
+        with st.expander(b.splitlines()[0][:90]):
+            st.code(b, language=None)
+    _copy_button("\n\n".join(blocks), "crash_copy")
+
+
+def _session_resume() -> None:
+    """Feature 49 — restore the last page/theme/pins from metadata/session.json."""
+    sfile = ROOT / "metadata" / "session.json"
+    try:
+        if sfile.exists():
+            data = json.loads(sfile.read_text())
+            for k in ("nav", "mt_theme", "mt_theme_mode", "mt_accent", "mt_font", "mt_focus", "mt_pinned", "mt_lang"):
+                if k not in st.session_state and k in data:
+                    st.session_state[k] = data[k]
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -996,6 +1824,10 @@ def page_inventory() -> None:
     with t3:
         _table(df, "inv", "inventory.csv", filter_col="path", height=360)
 
+    st.markdown("---")
+    st.subheader("🗂️ Dataset browser")
+    _dataset_browser()
+
     # feature 33 — project wizard: bootstrap layout -> upload -> normalize -> features
     with st.expander("🚀 Project wizard", expanded=False):
         st.caption(
@@ -1149,6 +1981,11 @@ def page_split() -> None:
         ]
         st.dataframe(pd.DataFrame(rows), width="stretch")
 
+    with st.expander("🔍 Segment inspector — play / rename / delete", expanded=False):
+        _segment_inspector()
+    with st.expander("🧬 Source provenance", expanded=False):
+        _provenance_view()
+
 
 # --------------------------------------------------------------------------- #
 # 🎛️ Generate
@@ -1156,6 +1993,19 @@ def page_split() -> None:
 def page_generate() -> None:
     _page_header("🎛️", "Generate audio", "MusicGen on MPS — prompt, guidance, and sampling control.")
     cfg = load_cfg()
+
+    # feature 33 — adopt a model picked in the checkpoint gallery
+    hint = st.session_state.pop("mt_model_hint", None)
+    if hint:
+        h1, h2 = st.columns([4, 1])
+        h1.info(f"🖼 Checkpoint gallery → adopt model **{hint}**")
+        if h2.button("✅ Adopt as default", key="gen_adopt", width="stretch"):
+            cfg.inference.model_name = hint
+            cfg.settings.default_model = hint
+            cfg.save(ROOT / "configs" / "default.yaml")
+            st.session_state["gen_model"] = hint
+            st.toast("default model updated")
+            st.rerun()
 
     # feature 37 — template library (apply fills the prompt area)
     t_names = ["— custom —"] + [t.name for t in _TEMPLATES]
@@ -1843,6 +2693,9 @@ def page_labels() -> None:
                     st.success(f"Applied to {len(sel)} row(s) and saved labels.csv")
                     st.rerun()
 
+    st.markdown("---")
+    _label_check_ui()
+
     st.subheader("💡 Label suggestions")
     sug = _read_json("label_suggestions.json")
     if not sug:
@@ -1987,6 +2840,9 @@ def page_listening() -> None:
                 r = json.loads(ln)
                 existing[(r["prompt"], r["checkpoint"])] = r
 
+    with st.expander("👆 Tap-to-BPM", expanded=False):
+        _tempo_tap("listen")
+
     checkpoints = sorted({r.get("checkpoint", "?") for r in rows})
     picked = st.multiselect("Checkpoints", checkpoints, default=checkpoints[:1], key="lst_ckpts")
     if picked:
@@ -2024,8 +2880,8 @@ def page_listening() -> None:
             st.write(r["prompt"])
             ap = r.get("audio_path")
             if ap and Path(ap).exists():
-                _waveform_chart(str(ap), f"lst_{i}")
-                st.audio(str(ap))
+                _pro_player(str(ap), f"lst_{i}", mode="wave")
+                _fullscreen_audio(str(ap), f"lst_{i}")
             else:
                 st.warning("Audio file missing")
             c1, c2 = st.columns([1, 3])
@@ -2415,7 +3271,7 @@ def page_eval() -> None:
             _nrows = 0
     st.caption(f"{len(prompts)} prompts in the set · current result file has {_nrows} rows")
 
-    if st.button("▶ Start eval", type="primary", key="ev_run"):
+    if st.button("▶ Start eval", type="primary", key="ev_run") or st.session_state.pop("ev_gate_requested", False):
         # protect the current baseline before run_eval overwrites the result file
         evf = ROOT / "metadata" / "eval_results.jsonl"
         if evf.exists():
@@ -2445,6 +3301,16 @@ def page_eval() -> None:
             st.dataframe(pd.DataFrame(results)[cols], width="stretch")
 
     _sched_eval(cfg, secs, int(seeds), int(limit))
+
+    st.markdown("---")
+    with st.expander("🔬 Failing-prompt drill-down", expanded=False):
+        from musictrain.report import load_results
+
+        _eval_drilldown(load_results(ROOT))
+    with st.expander("📝 Prompt-set builder", expanded=False):
+        _prompt_set_builder()
+    with st.expander("👀 Adapter watcher", expanded=False):
+        _adapter_watch()
 
 
 # --------------------------------------------------------------------------- #
@@ -2587,8 +3453,8 @@ def page_visualize() -> None:
     with m4:
         viz.countup_metric("mean CLAP", mean_clap, "viz_clap", decimals=2)
 
-    t_wave, t_spect, t_music, t_struct, t_stems, t_clap = st.tabs(
-        ["🌊 Waveform", "🔬 Spectrogram", "🎼 Beat & chords", "🧩 Structure", "🎚️ Stems", "🔖 CLAP"])
+    t_wave, t_spect, t_music, t_struct, t_stems, t_clap, t_player = st.tabs(
+        ["🌊 Waveform", "🔬 Spectrogram", "🎼 Beat & chords", "🧩 Structure", "🎚️ Stems", "🔖 CLAP", "🎛 Player"])
 
     with t_wave:
         viz.waveform(sel, "page")
@@ -2597,6 +3463,8 @@ def page_visualize() -> None:
     with t_spect:
         kind = st.radio("Kind", ["mel", "chroma"], horizontal=True, key="viz_kind")
         viz.spectrogram(sel, "page", kind=kind)
+        with st.expander("🖱 Clickable spectrogram — click anywhere to seek", expanded=False):
+            _pro_player(sel, "viz_spec", mode="spec")
     with t_music:
         rec = _analyze_clip(sel, cfg)
         viz.chord_beat_strip(rec.get("chords", []), rec.get("beat_grid", {}), "page")
@@ -2606,6 +3474,11 @@ def page_visualize() -> None:
         segs = rec.get("structure", {}).get("segments", [])
         viz.segmented_waveform(sel, segs, "page")
         viz.structure_timeline(sel, segs, "page")
+        _segment_plays(sel, segs, "viz_struct")
+    with t_player:
+        pmode = st.radio("View", ["wave", "spectrogram"], horizontal=True, key="viz_pmode")
+        _pro_player(sel, "viz_pro", mode=pmode)
+        st.caption("🎛 pro player — click the canvas to seek · ⚡ Live FFT for a realtime spectrum")
     with t_stems:
         stem_files = viz.scan_audio(ROOT, ["data/stems"])
         viz.stem_mixer(stem_files, "page")
@@ -2641,6 +3514,11 @@ def page_training() -> None:
     _page_header("📈", "Training",
                  "Model training and experiment health — read live from MLflow and local metadata.")
     cfg = load_cfg()
+    with st.expander("⚡ Live training telemetry", expanded=True):
+        _live_training(cfg)
+    if st.button("🏆 Restore best checkpoint → checkpoints/best", key="tr_restore_best"):
+        _restore_best(cfg)
+
     trainviz.training_hud(cfg)
 
     st.markdown("---")
@@ -2720,7 +3598,10 @@ def page_modelops() -> None:
     _page_header("📦", "Model Ops",
                  "Registry, backups, lineage and artifact integrity.")
     cfg = load_cfg()
-    t_reg, t_backup, t_lineage = st.tabs(["📚 Registry", "🗄️ Backups", "🧬 Lineage"])
+    t_reg, t_backup, t_lineage, t_gallery = st.tabs(["📚 Registry", "🗄️ Backups", "🧬 Lineage", "🖼️ Checkpoint gallery"])
+
+    with t_gallery:
+        _checkpoint_gallery(cfg)
 
     with t_reg:
         try:
@@ -2776,6 +3657,8 @@ def page_ops() -> None:
             st.metric("Total energy", f"{s.get('total_kwh', 0):.3f} kWh")
         with c2:
             st.metric("Runs", s.get("runs", 0))
+        st.markdown("#### Per-run breakdown")
+        _run_cost_table(cfg)
 
     with t_log:
         from musictrain.telemetry import read_runlog
@@ -2966,6 +3849,7 @@ def page_lyrics() -> None:
     m2.metric("Key", key)
     m3.metric("Swing", swing)
     m4.metric("Sections", len(segs))
+    _melody_hints(key)
 
     detected_roles = [s.get("role", "verse") for s in segs]
     st.caption("detected structure: " + " → ".join(detected_roles))
@@ -2999,6 +3883,17 @@ def page_lyrics() -> None:
 
     # ---------------- style ---------------- #
     st.subheader("🎛️ Style")
+    preset_name = st.selectbox(
+        "⚡ Style preset", ["(custom)"] + list(_STYLE_PRESETS), key="ly_style_preset",
+    )
+    if preset_name != "(custom)":
+        p = _STYLE_PRESETS[preset_name]
+        fa = A.get_artist(p["artist"])
+        if fa:
+            st.session_state["ly_artist"] = fa.name
+        if p["mood"] in A.MOODS:
+            st.session_state["ly_mood"] = p["mood"]
+        st.session_state["ly_topic"] = p["topic"]
     a1, a2, a3, a4 = st.columns(4)
     artist = a1.selectbox("Artist", A.artist_names(), key="ly_artist")
     genre_names = A.genre_names()
@@ -3080,6 +3975,12 @@ def page_lyrics() -> None:
 
     # ---------------- generate ---------------- #
     seed = st.number_input("Seed", 0, 10**6, int(st.session_state.get("ly_seed", 42)), key="ly_seed")
+    variation = st.slider(
+        "🎲 Variation", 1, 10, 3, key="ly_variation",
+        help="Higher = more seed drift for wider template choice.",
+    )
+    gen_seed = seed + (variation - 3) * 11
+    st.caption(f"effective seed: **{gen_seed}** (base {seed} + variation {(variation - 3) * 11:+d})")
     weights = {"topic": w_topic, "mood": w_mood, "flow": w_flow, "ad_libs": w_adlibs}
     negatives = [n.strip() for n in neg_text.split(",") if n.strip()]
     negatives += prefs.negatives(ROOT)
@@ -3106,6 +4007,7 @@ def page_lyrics() -> None:
 
     gcol1, gcol2, gcol3 = st.columns([3, 1, 1])
     if gcol1.button("✍️ Write lyrics", type="primary", key="ly_generate", width="stretch"):
+        ctx.seed = gen_seed
         result = L.generate(ctx)
         st.session_state["ly_result"] = result
         st.session_state["ly_ctx"] = ctx
@@ -3114,7 +4016,7 @@ def page_lyrics() -> None:
         _log_line(f"lyrics: {result.artist} {int(result.bpm)}bpm {result.mood}/{result.topic} seed={result.seed}")
 
     if gcol2.button("🎲 Re-roll", key="ly_reroll", width="stretch"):
-        ctx.seed = seed + int(time.time()) % 97
+        ctx.seed = gen_seed + int(time.time()) % 97
         result = L.generate(ctx)
         st.session_state["ly_result"] = result
         st.session_state["ly_ctx"] = ctx
@@ -3201,6 +4103,8 @@ def page_lyrics() -> None:
         edited = st.text_area(
             "Full text (edit freely)", value=result.full_text(), height=280, key="ly_editor",
         )
+        _syllable_stats(edited)
+        _rhyme_preview(edited)
         e1, e2 = st.columns(2)
         if e1.button("💾 Save edits", key="ly_editor_save", width="stretch"):
             st.session_state["ly_edited"] = edited
@@ -3211,6 +4115,11 @@ def page_lyrics() -> None:
                 file_name=slug + "_edited.txt", mime="text/plain", key="ly_dl_edited",
                 width="stretch",
             )
+
+    # ---------------- song assembly + lyric card (features 29/30) ---------------- #
+    with st.expander("🧩 Song assembler & lyric card", expanded=False):
+        _song_assembler(result)
+        _lyric_card_download(result)
 
     # ---------------- side-by-side diff (feature #7) ---------------- #
     with st.expander("🔍 Compare to another seed", expanded=False):
@@ -3324,6 +4233,16 @@ def page_settings() -> None:
         _apply_accent(_ACCENTS[accent])
         st.rerun()
 
+    font_cur = st.session_state.get("mt_font", "System")
+    font = ac2.selectbox(
+        "✒️ Font", list(_FONTS.keys()),
+        index=list(_FONTS.keys()).index(font_cur) if font_cur in _FONTS else 0,
+        key="set_font_pick",
+    )
+    if font != font_cur:
+        st.session_state["mt_font"] = font
+        st.rerun()
+
     lang = st.selectbox(
         "🌐 Language", ["en", "es"],
         index=0 if st.session_state.get("mt_lang", "en") == "en" else 1,
@@ -3401,6 +4320,8 @@ def page_settings() -> None:
         cfg.save(cfg_path)
         st.success(f"Saved → {cfg_path}")
         st.rerun()
+
+    _dataset_export_import()
 
     st.markdown("#### ⬆ Upload")
     up_files = st.file_uploader(
@@ -3601,6 +4522,7 @@ def main() -> None:
     if not streamlit_gate():
         st.stop()
 
+    _session_resume()  # feature 49 — restore last page/theme/pins
     _command_palette()
 
     history = st.session_state.setdefault("mt_history", [])
@@ -3620,6 +4542,12 @@ def main() -> None:
             _last_job_ui()  # feature 39 — replay the last job
             _print_button()
         _inspector()
+        with st.expander("⌨️ Shortcuts"):
+            st.caption("Ctrl/⌘+K — command palette")
+            st.caption("g · l · c · h · i · n · m · b · t · a · v · e · s — jump to pages")
+            st.caption("Esc — close palette")
+        with st.expander("🛠 Crash report"):
+            _crash_panel()  # feature 50
         st.markdown("---")
         choice = _nav_ui()
 
@@ -3632,6 +4560,24 @@ def main() -> None:
         history.append(choice)
         st.session_state["mt_history"] = history[-12:]
     _crumbs(history)
+
+    # feature 49 — persist the session (nav/theme/pins) for resume on reload
+    try:
+        sfile = ROOT / "metadata" / "session.json"
+        sfile.parent.mkdir(parents=True, exist_ok=True)
+        sfile.write_text(json.dumps({
+            "nav": choice,
+            "mt_theme": st.session_state.get("mt_theme"),
+            "mt_theme_mode": st.session_state.get("mt_theme_mode"),
+            "mt_accent": st.session_state.get("mt_accent"),
+            "mt_font": st.session_state.get("mt_font"),
+            "mt_focus": st.session_state.get("mt_focus", False),
+            "mt_pinned": st.session_state.get("mt_pinned", []),
+            "mt_lang": st.session_state.get("mt_lang", "en"),
+        }, indent=2))
+    except Exception:  # noqa: BLE001 - session persistence is best-effort
+        pass
+
     PAGES[choice]()
 
 

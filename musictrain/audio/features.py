@@ -15,9 +15,14 @@ _PC_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
 def load_audio(path: Path, sr: int = 32000):
-    import librosa
+    """Load any supported format (wav/flac/mp3/m4a/aiff/ogg) -> (y, sr).
 
-    y, sr = librosa.load(path, sr=sr, mono=True)
+    Uses the universal decoder, which falls back to an ffmpeg conversion for
+    AAC-family files (m4a) that librosa/soundfile can't open.
+    """
+    from .decode import load_any
+
+    y, sr = load_any(path, sr=sr, mono=True)
     return y, sr
 
 

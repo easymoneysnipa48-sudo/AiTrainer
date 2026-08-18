@@ -14,6 +14,34 @@ from ..util import format_seconds, human_size, sha256_file
 AUDIO_GLOB = ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.aiff", "*.aif", "*.ogg")
 
 
+def _probe(path: Path) -> dict:
+    """ffprobe fallback for formats soundfile can't read (m4a/AAC, ...)."""
+    import json as _json
+    import subprocess
+
+    cmd = ["ffprobe", "-v", "error", "-print_format", "json",
+           "-show_format", "-show_streams", str(path)]
+    try:
+        out = subprocess.run(cmd, capture_output=True, check=True)  # noqa: S603
+        data = _json.loads(out.stdout)
+    except Exception:  # noqa: BLE001
+        return {}
+    streams = data.get("streams") or []
+    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if not audio_stream:
+        return {}
+    fmt = data.get("format") or {}
+    return {
+        "duration": round(float(fmt.get("duration") or 0.0), 3),
+        "sample_rate": int(audio_stream.get("sample_rate") or 0),
+        "channels": int(audio_stream.get("channels") or 0),
+        "frames": int(audio_stream.get("duration_ts") or 0),
+        "format": audio_stream.get("codec_name") or "?",
+        "subtype": "",
+        "via": "ffprobe",
+    }
+
+
 def _scan(dir_path: Path) -> List[Path]:
     found: List[Path] = []
     for pattern in AUDIO_GLOB:
@@ -48,8 +76,13 @@ def inventory(root: Path, which: str = "clean", sha256: bool = False) -> List[di
             if sha256:
                 rec["sha256"] = sha256_file(path)
         except Exception as exc:  # noqa: BLE001 - report any failure
-            rec["valid"] = False
-            rec["error"] = str(exc)
+            probed = _probe(path)
+            if probed:
+                rec.update(probed)
+                rec["valid"] = True
+            else:
+                rec["valid"] = False
+                rec["error"] = str(exc)
         results.append(rec)
 
     out = root / "metadata" / "audio_inventory.json"

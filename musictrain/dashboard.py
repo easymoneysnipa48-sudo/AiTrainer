@@ -660,9 +660,9 @@ def _pro_player(path: str, key: str, mode: str = "wave") -> None:
     import numpy as np
 
     try:
-        import librosa
+        from musictrain.audio.features import load_audio
 
-        y, sr = librosa.load(str(path), sr=16000, mono=True)
+        y, sr = load_audio(Path(path), sr=16000)
     except Exception as exc:  # noqa: BLE001
         st.caption(f"player unavailable: {exc}")
         return
@@ -1725,11 +1725,12 @@ def _audio_grid(files: list, cols: int = 4) -> None:
 def _waveform_chart(path: str, key: str) -> None:
     """Feature 16: waveform thumbnail via librosa envelope + altair."""
     import altair as alt
-    import librosa
     import numpy as np
 
     try:
-        y, sr = librosa.load(str(path), sr=8000, mono=True)
+        from musictrain.audio.features import load_audio
+
+        y, sr = load_audio(Path(path), sr=8000)
         hop = max(1, len(y) // 240)
         env = np.abs(y[::hop])
         n = len(env)
@@ -1752,7 +1753,9 @@ def _spectrogram_chart(path: str, key: str) -> None:
     import numpy as np
 
     try:
-        y, sr = librosa.load(str(path), sr=16000, mono=True)
+        from musictrain.audio.features import load_audio
+
+        y, sr = load_audio(Path(path), sr=16000)
         S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=64)
         import matplotlib.pyplot as plt
 

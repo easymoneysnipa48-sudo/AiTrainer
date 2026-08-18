@@ -663,6 +663,12 @@ transformer with KV-cache + codec isn't directly traceable). Outputs land in
 
 ### Training your own models — lyrics + audio
 
+**Audio formats.** Every analysis path (tempo, key, swing, structure,
+waveforms) reads **wav, flac, mp3, m4a, aiff, aif, ogg** — AAC-family files
+(m4a) that libsndfile rejects are decoded transparently with ffmpeg, and
+`inventory` reports them via ffprobe instead of marking them invalid.
+`normalize` also converts any of these from `data/raw` to wav.
+
 **Lyrics (artist-style LLM fine-tune).** Import your lyric files (the
 1.4M-row `updated_rappers.csv` corpus, any Genius export, or your own
 JSON/CSV), split, and build chat-format instruction files:

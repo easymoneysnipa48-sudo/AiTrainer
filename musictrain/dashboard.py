@@ -4124,6 +4124,10 @@ def page_lyrics() -> None:
     c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
     with c1:
         st.caption(f"**{result.artist}** · {result.mood} · {result.topic} · {int(result.bpm)} BPM · {result.key} · seed {result.seed} · backend {result.backend}")
+
+    # quality-gate report (surfaces retries/fallbacks instead of hiding them)
+    if getattr(result, "gate_issues", None):
+        st.warning("Quality gate: " + "; ".join(result.gate_issues))
     with c2:
         slug = f"{result.artist}_{int(result.bpm)}bpm_{result.key.replace(' ', '')}_{result.mood}_{result.topic}_seed{result.seed}".replace("/", "-")
         st.download_button("⬇ .txt", result.full_text(), file_name=slug + ".txt", mime="text/plain", key="ly_dl")

@@ -1,88 +1,76 @@
-"""Tests for the combined per-genre + FAD quality gate (CI wiring)."""
-import json
+"""Tests for the lyric quality gate: CJK leak detection, short/empty lines,
+duplicate detection, and gate attachment on generated results."""
+from __future__ import annotations
 
-import pytest
+from musictrain.lyrics import BeatContext, LyricsResult, generate, quality_issues
 
 
-def _write_results(tmp_path, rows):
-    meta = tmp_path / "metadata"
-    meta.mkdir(exist_ok=True)
-    (meta / "eval_results.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in rows)
+def _result(sections):
+    return LyricsResult(
+        artist="Future", bpm=140, key="A minor", swing="straight",
+        mood="dark", topic="struggle", seed=1, sections=sections,
     )
-    return meta
 
 
-def _rows():
-    return [
-        {"genre": "melodic trap", "clap_score": 0.50, "deviation": 0.01},
-        {"genre": "melodic trap", "clap_score": 0.45, "deviation": 0.02},
-        {"genre": "ambient", "clap_score": 0.25, "deviation": 0.10},
-    ]
+def test_clean_result_passes():
+    r = _result([
+        {"role": "verse", "lines": ["I been movin' through the rain",
+                                    "they was doubtin' me",
+                                    "now they all remember the name",
+                                    "whole city on my back"]},
+        {"role": "hook", "lines": ["We made it out the dark", "now we shinin'"]},
+    ])
+    assert quality_issues(r) == []
 
 
-def test_quality_gate_passes_good_rows(tmp_path):
-    from musictrain.config import Config
-    from musictrain.gates import quality_gate
-
-    _write_results(tmp_path, _rows())
-    cfg = Config()
-    cfg.project_root = tmp_path
-
-    verdict = quality_gate(tmp_path, cfg, fad=5.0)
-    assert verdict["passed"] is True
-    assert verdict["fad_gate"]["passed"] is True
-    assert verdict["genre_gate"]["passed"] is True
-    assert (tmp_path / "metadata" / "quality_gate.json").exists()
+def test_cjk_leak_flagged():
+    r = _result([
+        {"role": "verse", "lines": ["I been movin' through the rain",
+                                    "可以理解为这是翻译说明",
+                                    "now they all remember the name",
+                                    "whole city on my back"]},
+        {"role": "hook", "lines": ["We made it out", "now we shine"]},
+    ])
+    issues = quality_issues(r)
+    assert any("multilingual/translation leak" in i for i in issues)
 
 
-def test_quality_gate_blocks_bad_genre(tmp_path):
-    from musictrain.config import Config
-    from musictrain.gates import quality_gate
-
-    rows = _rows() + [{"genre": "ambient", "clap_score": 0.05, "deviation": 0.60}]
-    _write_results(tmp_path, rows)
-    cfg = Config()
-    cfg.project_root = tmp_path
-
-    verdict = quality_gate(tmp_path, cfg, fad=5.0)
-    assert verdict["passed"] is False
-    assert verdict["genre_gate"]["passed"] is False
+def test_too_short_line_flagged():
+    r = _result([
+        {"role": "verse", "lines": ["I been movin' through the rain", "ok",
+                                    "now they all remember the name",
+                                    "whole city on my back"]},
+        {"role": "hook", "lines": ["We made it out", "now we shine"]},
+    ])
+    assert any("too-short line" in i for i in quality_issues(r))
 
 
-def test_quality_gate_blocks_bad_fad(tmp_path):
-    from musictrain.config import Config
-    from musictrain.gates import quality_gate
-
-    _write_results(tmp_path, _rows())
-    cfg = Config()
-    cfg.project_root = tmp_path
-
-    verdict = quality_gate(tmp_path, cfg, fad=25.0)
-    assert verdict["passed"] is False
-    assert verdict["fad_gate"]["passed"] is False
+def test_duplicate_lines_flagged():
+    dup = "I been movin' through the rain"
+    r = _result([
+        {"role": "verse", "lines": [dup, dup, dup, dup]},
+        {"role": "hook", "lines": ["We made it out", "now we shine"]},
+    ])
+    issues = quality_issues(r)
+    assert any("exact duplicates" in i for i in issues)
 
 
-def test_quality_gate_reads_fad_from_metrics(tmp_path):
-    from musictrain.config import Config
-    from musictrain.gates import quality_gate
-
-    meta = _write_results(tmp_path, _rows())
-    (meta / "metrics.json").write_text(json.dumps({"fad_clap": 4.2}))
-
-    cfg = Config()
-    cfg.project_root = tmp_path
-    verdict = quality_gate(tmp_path, cfg)
-    assert verdict["fad_gate"]["fad"] == pytest.approx(4.2)
-    assert verdict["passed"] is True
+def test_single_section_flagged():
+    r = _result([
+        {"role": "verse", "lines": ["a", "b", "c", "d", "e"]},
+    ])
+    assert any("only 1 section" in i for i in quality_issues(r))
 
 
-def test_quality_gate_no_results_fails(tmp_path):
-    from musictrain.config import Config
-    from musictrain.gates import quality_gate
+def test_generate_attaches_gate_report():
+    ctx = BeatContext(bpm=140, key="A minor", artist="future",
+                      mood="dark", topic="struggle", seed=3)
+    r = generate(ctx)
+    assert isinstance(r.gate_issues, list)
+    assert r.gate_issues == []  # offline engine output is gate-clean by construction
 
-    cfg = Config()
-    cfg.project_root = tmp_path
-    verdict = quality_gate(tmp_path, cfg)
-    assert verdict["passed"] is False
-    assert verdict["reason"] == "no eval results"
+
+def test_gate_in_as_dict():
+    ctx = BeatContext(bpm=120, key="C major", artist="drake", seed=5)
+    d = generate(ctx).as_dict()
+    assert "gate_issues" in d

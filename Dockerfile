@@ -6,8 +6,15 @@
 # Optional HF cache warm-up (#13): bake the model weights into the image so the
 # first generation doesn't download them at runtime:
 #   docker build --build-arg WARM_MODEL=facebook/musicgen-small -t musictrain .
+#
+# CUDA image for training on a GPU host (e.g. the Ubuntu workstation):
+#   docker build --build-arg WITH_CUDA=1 --build-arg TORCH_INDEX=cu124 -t musictrain:cuda .
+#   docker run --rm --gpus all -v $PWD:/work musictrain:cuda finetune --steps 5
 
 FROM python:3.11-slim
+
+ARG WITH_CUDA=0
+ARG TORCH_INDEX=cu124
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -31,9 +38,15 @@ RUN pip install --upgrade pip \
     && pip install . \
     && pip install fastapi uvicorn huggingface_hub
 
-# Optional heavyweight deps (uncomment if you need them in-image):
-# RUN pip install torch torchaudio transformers accelerate \
-#     librosa soundfile scikit-learn streamlit mlflow
+# Heavyweight training deps. Default build keeps the image lean (CPU torch);
+# --build-arg WITH_CUDA=1 swaps in CUDA builds from the pytorch index so
+# finetune/train-lyrics run on the GPU (auto-detected by the code).
+RUN if [ "$WITH_CUDA" = "1" ]; then \
+      pip install torch torchaudio --index-url https://download.pytorch.org/whl/$TORCH_INDEX; \
+    else \
+      pip install torch torchaudio; \
+    fi \
+    && pip install transformers accelerate peft librosa soundfile scikit-learn streamlit mlflow
 
 # Optional cache warm-up (#13): pre-pull model weights (defaults to nothing).
 ARG WARM_MODEL=""

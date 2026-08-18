@@ -70,6 +70,29 @@ def _pairs(root: Path, limit: int = 0) -> List[Tuple[Path, str]]:
             pairs.append((p, desc))
         if limit and len(pairs) >= limit:
             break
+
+    # augmented variants (data/augmented + metadata/augmented.json) inherit the
+    # source segment's description with the transform appended, so ``augment``
+    # output feeds the fine-tune set automatically.
+    aug_json = root / "metadata" / "augmented.json"
+    aug_dir = root / "data" / "augmented"
+    if aug_json.exists() and aug_dir.exists():
+        try:
+            aug = json.loads(aug_json.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            aug = []
+        for entry in aug:
+            base = desc_by_key.get(Path(entry.get("source", "")).stem) or ""
+            for v in entry.get("variants", []):
+                vpath = root / v["path"]
+                if not vpath.exists():
+                    continue
+                params = v.get("params") or {}
+                detail = ", ".join(f"{k}={val}" for k, val in params.items()) or v.get("op", "augmented")
+                desc = f"{base} ({detail})".strip() if base else f"{v.get('op', 'augmented')}-processed segment"
+                pairs.append((vpath, desc))
+                if limit and len(pairs) >= limit:
+                    return pairs
     return pairs
 
 

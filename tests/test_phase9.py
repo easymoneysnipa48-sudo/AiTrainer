@@ -149,7 +149,7 @@ def test_augment_writes_variants(tmp_path):
     _write_wav(clean / "song.wav")
     cfg = Config()
     cfg.project_root = tmp_path
-    results = augment(tmp_path, cfg, ops=["quiet", "noise"])
+    results = augment(tmp_path, cfg, which="clean", ops=["quiet", "noise"])
     assert len(results) == 1
     assert len(results[0]["variants"]) == 2
     for v in results[0]["variants"]:

@@ -74,12 +74,63 @@ def spectral_tilt(audio: np.ndarray, sr: int, tilt_db: float = 3.0) -> np.ndarra
     return scipy.signal.lfilter(b, a, audio).astype(np.float32)
 
 
+def _default_params(op: str) -> dict:
+    if op == "pitch_up":
+        return {"semitones": 2.0}
+    if op == "pitch_down":
+        return {"semitones": -2.0}
+    if op == "stretch":
+        return {"rate": 1.1}
+    if op == "noise":
+        return {"level": 0.004}
+    if op == "eq":
+        return {"tilt_db": 3.0}
+    if op == "quiet":
+        return {"gain": 0.7}
+    return {}
+
+
+def _rand_params(op: str, rng) -> dict:
+    """Draw a random parameter set for an op (pitch ±1-3 st, stretch 0.9-1.1x, ...)."""
+    if op == "pitch_up":
+        return {"semitones": round(float(rng.uniform(1.0, 3.0)), 2)}
+    if op == "pitch_down":
+        return {"semitones": round(-float(rng.uniform(1.0, 3.0)), 2)}
+    if op == "stretch":
+        return {"rate": round(float(rng.uniform(0.9, 1.1)), 4)}
+    if op == "noise":
+        return {"level": round(float(rng.uniform(0.002, 0.008)), 5)}
+    if op == "eq":
+        return {"tilt_db": round(float(rng.choice([-1.0, 1.0]) * rng.uniform(2.0, 6.0)), 2)}
+    if op == "quiet":
+        return {"gain": round(float(rng.uniform(0.6, 0.9)), 3)}
+    return {}
+
+
+def _apply_op(op: str, audio: np.ndarray, sr: int, p: dict, rng) -> np.ndarray:
+    if op == "pitch_up":
+        return pitch_shift(audio, sr, p["semitones"])
+    if op == "pitch_down":
+        return pitch_shift(audio, sr, p["semitones"])
+    if op == "stretch":
+        return time_stretch(audio, sr, p["rate"])
+    if op == "noise":
+        return add_noise(audio, p["level"], seed=int(rng.integers(0, 1 << 30)))
+    if op == "eq":
+        return spectral_tilt(audio, sr, p["tilt_db"])
+    if op == "quiet":
+        return audio * p["gain"]
+    return audio
+
+
 def augment(
     root: Path,
     cfg: Config,
-    which: str = "clean",
+    which: str = "segments",
     ops: List[str] | None = None,
+    variants: int = 1,
     limit: int = 0,
+    seed: int = 0,
 ) -> List[dict]:
     from .audio.inventory import AUDIO_GLOB
 
@@ -101,8 +152,8 @@ def augment(
     out_root.mkdir(parents=True, exist_ok=True)
 
     results: List[dict] = []
-    rng = np.random.default_rng(0)
-    console.step(f"Augmenting {len(files)} file(s) with {selected} (-> data/augmented)")
+    rng = np.random.default_rng(seed)
+    console.step(f"Augmenting {len(files)} file(s) x {variants} variant(s) with {selected} (-> data/augmented)")
     for i, path in enumerate(files, 1):
         if limit and i > limit:
             break
@@ -114,37 +165,19 @@ def augment(
 
         made: List[dict] = []
         for op in selected:
-            try:
-                out = audio
-                desc: dict = {"op": op}
-                if op == "pitch_up":
-                    out = pitch_shift(audio, sr, 2.0)
-                    desc["semitones"] = 2.0
-                elif op == "pitch_down":
-                    out = pitch_shift(audio, sr, -2.0)
-                    desc["semitones"] = -2.0
-                elif op == "stretch":
-                    out = time_stretch(audio, sr, 1.1)
-                    desc["rate"] = 1.1
-                elif op == "noise":
-                    out = add_noise(audio, 0.004, seed=int(rng.integers(0, 1 << 30)))
-                    desc["level"] = 0.004
-                elif op == "eq":
-                    out = spectral_tilt(audio, sr, 3.0)
-                    desc["tilt_db"] = 3.0
-                elif op == "quiet":
-                    out = audio * 0.7
-                    desc["gain"] = 0.7
-                _save(out_root / f"{path.stem}__{op}.wav", out, sr)
-                made.append(
-                    {
+            for v in range(max(1, variants)):
+                try:
+                    p = _rand_params(op, rng) if variants > 1 else _default_params(op)
+                    out = _apply_op(op, audio, sr, p, rng)
+                    name = f"{path.stem}__{op}.wav" if variants == 1 else f"{path.stem}__{op}_{v}.wav"
+                    _save(out_root / name, out, sr)
+                    made.append({
                         "op": op,
-                        "path": str((out_root / f"{path.stem}__{op}.wav").relative_to(root)),
-                        "params": desc,
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                console.error(f"Augment {op} failed {path.name}: {exc}")
+                        "path": str((out_root / name).relative_to(root)),
+                        "params": p,
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    console.error(f"Augment {op} failed {path.name}: {exc}")
 
         results.append({"source": str(path.relative_to(root)), "variants": made})
         console.info(f"[{i}/{len(files)}] {path.name} -> {len(made)} variant(s)")

@@ -270,6 +270,10 @@ def cmd_tuning(args) -> int:
         lrs=args.lrs or [],
         per_sample_bytes=args.per_sample_bytes or 0,
         headroom=args.headroom,
+        format=args.format,
+        component=args.component,
+        out_dir=Path(args.out) if args.out else None,
+        opset=args.opset,
     )
     if result.get("error"):
         return 1
@@ -791,6 +795,8 @@ def cmd_lyrics(args) -> int:
     for idx, result in enumerate(results):
         console.title(f"--- variant {idx + 1}/{n} (seed={result.seed}, backend={result.backend}) ---")
         print(result.full_text())
+        if getattr(result, "gate_issues", None):
+            console.warn("Quality gate: " + "; ".join(result.gate_issues))
 
         # rhyme + syllable annotations (feature #2)
         if args.annotate:
@@ -832,6 +838,20 @@ def cmd_lyrics(args) -> int:
                 f"rhyme_density={m['rhyme_density']} avg_syll={m['avg_syllables']} "
                 f"std={m['syllable_std']} flow_score={m['flow_score']}/100"
             )
+
+        # LLM-as-judge scoring (feature #18)
+        if args.judge:
+            from .lyricjudge import DIMENSION_LABELS, judge
+
+            j = judge(result, rubric=args.judge)
+            console.info(f"LLM judge (backend={j['backend']}, rubric={j['rubric']}):")
+            for d, s in j["scores"].items():
+                console.info(f"  {d:11s} {s:>4.1f}/10  {DIMENSION_LABELS.get(d, '')}")
+            console.info(f"  {'overall':11s} {j['overall']:>4.1f}/10")
+            if j.get("rationale"):
+                console.info(f"  rationale: {j['rationale']}")
+            if j.get("note"):
+                console.warn(j["note"])
 
         # LRC karaoke export (feature #9)
         if args.lrc is not None:
@@ -1332,8 +1352,93 @@ def cmd_augment(args) -> int:
 
     cfg = _build_config(args)
     ops = args.ops.split(",") if args.ops else None
-    augment(cfg.project_root, cfg, which=args.dir, ops=ops, limit=args.limit)
+    augment(cfg.project_root, cfg, which=args.dir, ops=ops, variants=args.variants,
+            limit=args.limit, seed=args.seed)
     return 0
+
+
+def cmd_lyricscrape(args) -> int:
+    from . import lyricdataset, lyricscrape
+
+    cfg = _build_config(args)
+    root = cfg.project_root
+    artists = [a.strip() for a in (args.artists or "").split(",") if a.strip()]
+    if not artists:
+        console.error("lyricscrape needs --artists (comma-separated)")
+        return 2
+    records = lyricscrape.scrape(
+        artists,
+        per_artist=args.per_artist,
+        source=args.source,
+        extra_titles=args.titles,
+        sleep=args.sleep,
+        dry_run=args.dry_run,
+        limit=args.limit,
+    )
+    if args.dry_run:
+        console.info("Dry run — nothing written. Re-run without --dry-run to import.")
+        return 0
+    if not records:
+        console.warn("No lyrics fetched — check the source and artist names.")
+        return 0
+    summary = lyricdataset.append_records(root, records)
+    console.ok(f"Merged into dataset: +{summary['added']} new song(s)")
+    console.info("Next: `musictrain lyricdataset --action split` then `--action train-files`.")
+    return 0
+
+
+def cmd_synthcorpus(args) -> int:
+    from . import synthcorpus
+
+    cfg = _build_config(args)
+    artists = [a.strip() for a in (args.artists or "").split(",") if a.strip()] or None
+    moods = [m.strip() for m in (args.moods or "").split(",") if m.strip()] or None
+    topics = [t.strip() for t in (args.topics or "").split(",") if t.strip()] or None
+    summary = synthcorpus.generate_corpus(
+        cfg.project_root,
+        artists=artists,
+        per_artist=args.per_artist,
+        moods=moods,
+        topics=topics,
+        seed=args.seed,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
+    if not args.dry_run:
+        console.ok(f"Synth corpus merged: +{summary['added']} new song(s)")
+        console.info("Next: `musictrain lyricdataset --action split` then `--action train-files`.")
+    return 0
+
+
+def cmd_cleanup(args) -> int:
+    from . import cleanup
+
+    cfg = _build_config(args)
+    cleanup.run(cfg.project_root, dry_run=args.dry_run, keep_eval=args.keep_eval)
+    if args.dry_run:
+        console.info("Dry run — nothing deleted. Re-run without --dry-run to remove.")
+    return 0
+
+
+def cmd_pipeline(args) -> int:
+    from . import pipeline
+
+    cfg = _build_config(args)
+    steps = [s.strip() for s in (args.steps or "audio,lyrics").split(",") if s.strip()]
+    result = pipeline.run(
+        cfg.project_root,
+        cfg,
+        steps=steps,
+        force_segment=args.force,
+        augment_enabled=not args.no_augment,
+        finetune_epochs=args.finetune_steps,
+        lyrics_steps=args.lyrics_steps,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        console.info("Dry run — plan only, nothing executed.")
+    return 0 if result else 1
 
 
 def cmd_sections(args) -> int:
@@ -1949,6 +2054,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--auto", action="store_true", help="Style-profile autopilot (auto-pick artist/mood/topic)")
     sp.add_argument("--annotate", action="store_true", help="Print rhyme + syllable annotations per line")
     sp.add_argument("--metrics", action="store_true", help="Print lyrical metrics (rhyme density, flow score)")
+    sp.add_argument("--judge", nargs="?", const="standard", default=None,
+                    help="LLM-judge the lyrics on a rubric (standard/technical/creative, or a dimension list)")
     sp.add_argument("--sheet", nargs="?", const="", default=None, help="Export a markdown studio sheet (optional path)")
     sp.add_argument("--lrc", nargs="?", const="", default=None, help="Export LRC (karaoke) timestamps (optional path)")
     sp.add_argument("--project-save", default=None, help="Save beat+lyrics+settings as a named project")
@@ -2123,18 +2230,22 @@ def build_parser() -> argparse.ArgumentParser:
     # tuning (gap #1-#7)
     sp = sub.add_parser(
         "tuning",
-        help="Training helpers: resume, HPO, MLX, quantization, tokenizer, inversion, grad-accum plan",
+        help="Training helpers: resume, HPO, MLX, quantization, tokenizer, inversion, grad-accum plan, export",
     )
     add_common(sp)
     sp.add_argument("--task", required=True,
                     choices=["resume", "hpo", "mlx", "quantize", "tokens", "inversion", "plan",
-                             "lr-find", "pick-lr", "auto-batch"],
+                             "lr-find", "pick-lr", "auto-batch", "export"],
                     help="Which tuning helper to run")
     sp.add_argument("--adapters", default=None, help="Adapters dir for resume")
     sp.add_argument("--metric", default="leaderboard_score", help="HPO objective metric")
     sp.add_argument("--trials", type=int, default=10, help="HPO trial count")
     sp.add_argument("--seed", type=int, default=0)
-    sp.add_argument("--model", default=None, help="Model name for quantize")
+    sp.add_argument("--model", default=None, help="Model name for quantize/export")
+    sp.add_argument("--format", default="onnx", choices=["onnx", "coreml"], help="Export format")
+    sp.add_argument("--component", default="codec", choices=["codec", "full"], help="Export target (codec decoder or full pipeline)")
+    sp.add_argument("--out", default=None, help="Export output directory (default <root>/exports)")
+    sp.add_argument("--opset", type=int, default=17, help="ONNX opset version")
     sp.add_argument("--bits", type=int, default=8, choices=[4, 8], help="Quantization bits")
     sp.add_argument("--tokens", nargs="*", default=None, help="Custom style tokens to register")
     sp.add_argument("--tokenizer", default=None, help="Tokenizer id to actually extend (e.g. facebook/musicgen-small)")
@@ -2394,11 +2505,70 @@ def build_parser() -> argparse.ArgumentParser:
     # augment
     sp = sub.add_parser("augment", help="Generate audio training variants")
     add_common(sp)
-    sp.add_argument("--dir", default="clean", help="data/<dir> to augment")
+    sp.add_argument("--dir", default="segments", choices=["clean", "segments"],
+                    help="data/<dir> to augment (segments feed the fine-tune set)")
     sp.add_argument("--ops", default=None,
                     help="Comma list: pitch_up,pitch_down,stretch,noise,eq,quiet")
+    sp.add_argument("--variants", type=int, default=1,
+                    help="Random-parameter variants per op (pitch ±1-3 st, stretch 0.9-1.1x, ...)")
+    sp.add_argument("--seed", type=int, default=0, help="RNG seed for variant params")
     sp.add_argument("--limit", type=int, default=0)
     sp.set_defaults(func=cmd_augment)
+
+    # lyricscrape (fetch real lyrics for artist profiles)
+    sp = sub.add_parser(
+        "lyricscrape",
+        help="Fetch real lyrics for artist profiles (Genius API or keyless lyrics.ovh)",
+    )
+    add_common(sp)
+    sp.add_argument("--artists", required=True, help="Comma-separated artist ids/names")
+    sp.add_argument("--per-artist", type=int, default=15, help="Max songs per artist")
+    sp.add_argument("--source", default="auto", choices=["auto", "genius", "ovh"],
+                    help="auto = Genius when GENIUS_ACCESS_TOKEN is set, else lyrics.ovh")
+    sp.add_argument("--title", dest="titles", action="append", default=[],
+                    help="Extra song title to fetch (repeatable; added to every artist)")
+    sp.add_argument("--sleep", type=float, default=1.0, help="Seconds between requests")
+    sp.add_argument("--limit", type=int, default=0, help="Cap total records")
+    sp.add_argument("--dry-run", action="store_true", help="Plan + report without fetching")
+    sp.set_defaults(func=cmd_lyricscrape)
+
+    # synthcorpus (deterministic synthetic lyric corpus expander)
+    sp = sub.add_parser(
+        "synthcorpus",
+        help="Expand the lyric dataset with deterministic synthetic songs (offline engine)",
+    )
+    add_common(sp)
+    sp.add_argument("--artists", default=None, help="Comma-separated artist filter (default: all)")
+    sp.add_argument("--per-artist", type=int, default=25, help="Synthetic songs per artist")
+    sp.add_argument("--moods", default=None, help="Comma-separated mood filter")
+    sp.add_argument("--topics", default=None, help="Comma-separated topic filter")
+    sp.add_argument("--seed", type=int, default=7)
+    sp.add_argument("--limit", type=int, default=0, help="Cap total records")
+    sp.add_argument("--dry-run", action="store_true", help="Report size without writing")
+    sp.set_defaults(func=cmd_synthcorpus)
+
+    # cleanup (remove transient/generated artifacts)
+    sp = sub.add_parser("cleanup", help="Remove transient artifacts (session/tmp/stale eval+logs)")
+    add_common(sp)
+    sp.add_argument("--dry-run", action="store_true", help="Report what would be removed")
+    sp.add_argument("--keep-eval", type=int, default=5, help="Keep this many eval_result backups")
+    sp.set_defaults(func=cmd_cleanup)
+
+    # pipeline (one-command retrain)
+    sp = sub.add_parser(
+        "pipeline",
+        help="One-command retrain: features->segment->split->labels->augment->finetune(+lyrics)",
+    )
+    add_common(sp)
+    sp.add_argument("--steps", default="audio,lyrics",
+                    help="Comma list: audio,lyrics,eval (default: audio,lyrics)")
+    sp.add_argument("--finetune-steps", type=int, default=2, help="Fine-tune epochs")
+    sp.add_argument("--lyrics-steps", type=int, default=0, help="Gradient steps for train-lyrics (0 = skip)")
+    sp.add_argument("--no-augment", action="store_true", help="Skip the augmentation step")
+    sp.add_argument("--force", action="store_true", help="Force re-segmenting (else skips existing)")
+    sp.add_argument("--limit", type=int, default=0, help="Cap finetune pairs / lyrics examples")
+    sp.add_argument("--dry-run", action="store_true", help="Print the plan without running")
+    sp.set_defaults(func=cmd_pipeline)
 
     # sections
     sp = sub.add_parser("sections", help="Auto-label segments with section roles")

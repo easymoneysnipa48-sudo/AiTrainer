@@ -46,6 +46,31 @@ services:
       - mlflow
       - api
 
+  # GPU trainer — only started with `docker compose --profile cuda up trainer`.
+  # Build the GPU image first: docker compose build --build-arg WITH_CUDA=1 trainer
+  trainer:
+    profiles: ["cuda"]
+    build:
+      context: .
+      args:
+        WITH_CUDA: "1"
+    command: pipeline --finetune-steps 2
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - HF_HOME=/cache/huggingface
+    volumes:
+      - ./:/work
+      - hf-cache:/cache/huggingface
+    depends_on:
+      - mlflow
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
 volumes:
   mlflow-data:
   hf-cache:

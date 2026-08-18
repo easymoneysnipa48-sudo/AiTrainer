@@ -626,6 +626,54 @@ def _banned(line: str, negatives: List[str]) -> bool:
     return any(w.strip().lower() in low for w in negatives if w.strip())
 
 
+def _cjk_ratio(s: str) -> float:
+    if not s:
+        return 0.0
+    return sum(0x4E00 <= ord(ch) <= 0x9FFF for ch in s) / len(s)
+
+
+def quality_issues(result: LyricsResult) -> List[str]:
+    """Quality-gate report for a generated result.
+
+    Flags the failure modes the fine-tuned local model actually exhibited:
+    Chinese/multilingual leakage, header-less single-blob output, too-short or
+    empty lines, missing sections, and heavy line duplication. An empty list
+    means the result is fit to show; ``generate`` uses this to retry LLM/local
+    backends on a different seed before falling back to the offline engine.
+    """
+    issues: List[str] = []
+    if not result.sections:
+        return ["no sections parsed — output was unusable"]
+    if len(result.sections) < 2:
+        issues.append(f"only {len(result.sections)} section(s) parsed (expected several)")
+
+    all_lines: List[str] = []
+    total = 0
+    for s in result.sections:
+        lines = s.get("lines") or []
+        role = s.get("role", "section")
+        if not lines:
+            issues.append(f"[{role}] is empty")
+        for ln in lines:
+            ln = (ln or "").strip()
+            if not ln:
+                continue
+            total += 1
+            all_lines.append(ln)
+            if _cjk_ratio(ln) > 0.2 or "理解为" in ln or "翻译" in ln:
+                issues.append(f"[{role}] multilingual/translation leak: {ln[:48]}")
+            elif len(ln) < 3:
+                issues.append(f"[{role}] too-short line: {ln!r}")
+
+    if total < 4:
+        issues.append(f"only {total} lyric line(s) generated")
+    if len(all_lines) > 4:
+        dups = len(all_lines) - len(set(all_lines))
+        if dups / len(all_lines) > 0.4:
+            issues.append(f"{dups}/{len(all_lines)} lines are exact duplicates")
+    return issues
+
+
 # --------------------------------------------------------------------------- #
 # Orchestrator
 # --------------------------------------------------------------------------- #
@@ -640,6 +688,7 @@ class LyricsResult:
     seed: int
     sections: List[dict] = field(default_factory=list)
     backend: str = "offline"
+    gate_issues: List[str] = field(default_factory=list)   # quality-gate report
 
     def as_dict(self) -> dict:
         return {
@@ -651,6 +700,7 @@ class LyricsResult:
             "topic": self.topic,
             "seed": self.seed,
             "backend": self.backend,
+            "gate_issues": self.gate_issues,
             "sections": self.sections,
         }
 
@@ -679,7 +729,13 @@ class LyricsResult:
 
 
 def generate(ctx: BeatContext) -> LyricsResult:
-    """Generate full lyrics for a beat context (offline or LLM-backed)."""
+    """Generate full lyrics for a beat context (offline or LLM-backed).
+
+    Quality gate: LLM/local output that fails :func:`quality_issues` is retried
+    on a different seed (API once, local up to 3 seeds) before falling back to
+    the offline engine. The final result always carries ``gate_issues`` so the
+    CLI/dashboard can surface any residual warnings.
+    """
     artist = ctx.artist_obj()
     if artist is None:
         artist = get_artist("future")  # type: ignore[assignment]
@@ -687,14 +743,36 @@ def generate(ctx: BeatContext) -> LyricsResult:
     if os.environ.get("MUSICTRAIN_LLM_API_KEY"):
         llm = _generate_llm(ctx, artist)
         if llm is not None:
-            return llm
+            issues = quality_issues(llm)
+            if not issues:
+                return llm
+            log.warning("API output failed quality gate, retrying once: %s", "; ".join(issues))
+            llm = _generate_llm(ctx, artist, seed=ctx.seed + 1)
+            if llm is not None:
+                issues = quality_issues(llm)
+                if not issues:
+                    return llm
+            log.warning("API output still failing quality gate: %s", "; ".join(issues))
 
     local_path = os.environ.get("MUSICTRAIN_LLM_MODEL_PATH")
     if local_path:
-        llm = _generate_local(ctx, artist, local_path)
-        if llm is not None:
-            return llm
+        for attempt in range(3):
+            llm = _generate_local(ctx, artist, local_path, seed=ctx.seed + attempt)
+            if llm is None:
+                continue
+            issues = quality_issues(llm)
+            if not issues:
+                return llm
+            log.warning("local output failed quality gate (attempt %d): %s",
+                        attempt + 1, "; ".join(issues))
 
+    result = _generate_offline(ctx, artist)
+    result.gate_issues = quality_issues(result)
+    return result
+
+
+def _generate_offline(ctx: BeatContext, artist: Artist) -> LyricsResult:
+    """The template + rhyme-bank generator (deterministic for a given seed)."""
     rng = random.Random(ctx.seed)
     structure = ctx.structure or list(_DEFAULT_STRUCTURE)
     sections = []
@@ -821,11 +899,6 @@ def _parse_llm(text: str, ctx: BeatContext) -> Optional[LyricsResult]:
     role_re = re.compile(r"^\[?([A-Za-z-]+)(?:\s+\d+)?\]?:?\s*(.*)$")
     roles = {"intro", "verse", "hook", "chorus", "bridge", "outro", "pre-chorus"}
 
-    def _cjk_ratio(s: str) -> float:
-        if not s:
-            return 0.0
-        return sum(0x4E00 <= ord(ch) <= 0x9FFF for ch in s) / len(s)
-
     sections: List[dict] = []
     current: Optional[dict] = None
     plain_lines: List[str] = []  # header-less lyrics (fallback section)
@@ -877,13 +950,15 @@ def _parse_llm(text: str, ctx: BeatContext) -> Optional[LyricsResult]:
 _local_model_cache: Dict[str, tuple] = {}  # path -> (model, tokenizer, device)
 
 
-def _generate_local(ctx: BeatContext, artist: Artist, path: str) -> Optional[LyricsResult]:
+def _generate_local(ctx: BeatContext, artist: Artist, path: str,
+                    seed: Optional[int] = None) -> Optional[LyricsResult]:
     """Generate with a locally fine-tuned model (a ``train-lyrics`` adapter dir).
 
     Reads ``metadata.json`` inside the adapter dir for the base model name;
     loads it + the LoRA adapter lazily (cached per path), builds the same
     prompt as the hosted backend, and parses the reply with ``_parse_llm``.
-    Any failure falls back to the offline generator.
+    One (seed-controlled) generation attempt; the caller drives the retry
+    loop. Any failure returns None so the caller falls back to offline.
     """
     try:
         import torch
@@ -928,24 +1003,18 @@ def _generate_local(ctx: BeatContext, artist: Artist, path: str) -> Optional[Lyr
         ]
         prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         ids = tok(prompt, return_tensors="pt").to(device)
-        result: Optional[LyricsResult] = None
-        # sampling is stochastic and a lightly-trained model occasionally drifts
-        # (e.g. multilingual mode) — retry once on a different seed before giving up
-        for attempt_seed in (ctx.seed, ctx.seed + 1):
-            torch.manual_seed(attempt_seed)
-            with torch.no_grad():
-                out = model.generate(
-                    **ids,
-                    max_new_tokens=700,
-                    do_sample=True,
-                    temperature=0.9,
-                    top_p=0.95,
-                    pad_token_id=tok.pad_token_id,
-                )
-            text = tok.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
-            result = _parse_llm(text, ctx)
-            if result is not None:
-                break
+        torch.manual_seed(seed if seed is not None else ctx.seed)
+        with torch.no_grad():
+            out = model.generate(
+                **ids,
+                max_new_tokens=700,
+                do_sample=True,
+                temperature=0.9,
+                top_p=0.95,
+                pad_token_id=tok.pad_token_id,
+            )
+        text = tok.decode(out[0][ids["input_ids"].shape[1]:], skip_special_tokens=True)
+        result = _parse_llm(text, ctx)
         if result is not None:
             result.backend = "local"
         return result
@@ -954,7 +1023,8 @@ def _generate_local(ctx: BeatContext, artist: Artist, path: str) -> Optional[Lyr
         return None
 
 
-def _generate_llm(ctx: BeatContext, artist: Artist) -> Optional[LyricsResult]:
+def _generate_llm(ctx: BeatContext, artist: Artist,
+                  seed: Optional[int] = None) -> Optional[LyricsResult]:
     key = os.environ.get("MUSICTRAIN_LLM_API_KEY")
     base = os.environ.get("MUSICTRAIN_LLM_BASE_URL") or "https://api.openai.com/v1"
     model = os.environ.get("MUSICTRAIN_LLM_MODEL") or "gpt-4o-mini"
@@ -966,7 +1036,7 @@ def _generate_llm(ctx: BeatContext, artist: Artist) -> Optional[LyricsResult]:
             {"role": "user", "content": _llm_prompt(ctx, artist)},
         ],
         "temperature": 0.9,
-        "seed": ctx.seed,
+        "seed": seed if seed is not None else ctx.seed,
     }
     req = urllib.request.Request(
         url,

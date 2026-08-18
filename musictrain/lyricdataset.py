@@ -209,6 +209,25 @@ def import_records(path: Path, artists: Optional[Iterable[str]] = None) -> List[
                     "lines": lines, "mood": row.get("mood", ""),
                     "topic": row.get("topic", ""), "source": str(path),
                 })
+    elif suffix == ".txt":
+        # plain-text lyrics: filename "Artist - Title.txt" (or "Artist - Title -
+        # whatever.txt" / "Artist - Title.txt" with any noise around it). The
+        # first " - " separator splits artist and title; the rest of the stem is
+        # dropped so YouTube-downloaded filenames with extra tags still work.
+        name = path.stem
+        m = re.split(r"\s+-\s+", name, maxsplit=1)
+        artist = m[0].strip() if m else ""
+        title = m[1].strip() if len(m) > 1 else name.strip()
+        if not artist:
+            return out
+        if want and not any(w in artist.lower() for w in want):
+            return out
+        lines = [ln for ln in (clean_line(raw) for raw in path.read_text(encoding="utf-8", errors="replace").splitlines()) if ln]
+        if len(lines) >= 4:
+            out.append({
+                "artist": artist, "title": title or "Untitled",
+                "lines": lines, "mood": "", "topic": "", "source": str(path),
+            })
     return out
 
 
@@ -289,6 +308,63 @@ def _all_songs(root: Path) -> List[dict]:
             if ln.strip():
                 out.append(json.loads(ln))
     return out
+
+
+def append_records(root: Path, records: List[dict]) -> Dict[str, int]:
+    """Merge scraped/synthetic records into ``lyrics/<aid>/songs.jsonl``.
+
+    Unlike :func:`build_dataset` (which overwrites an artist's file with only
+    the records it was handed), this *merges*: existing titles are kept and new
+    ones appended, and ``lyrics/index.json`` for untouched artists is preserved.
+    Returns {"added": n}.
+    """
+    by_id: Dict[str, List[dict]] = {}
+    for s in records:
+        aid, disp = normalize_artist(s.get("artist") or "")
+        rec = dict(s)
+        rec["artist_id"] = aid
+        rec["artist"] = disp
+        rec["n_lines"] = len(s.get("lines") or [])
+        by_id.setdefault(aid, []).append(rec)
+
+    out_root = root / "lyrics"
+    out_root.mkdir(parents=True, exist_ok=True)
+    index_path = out_root / "index.json"
+    index: Dict[str, object] = {}
+    if index_path.exists():
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+
+    total_added = 0
+    for aid, recs in sorted(by_id.items()):
+        path = out_root / aid / "songs.jsonl"
+        existing: Dict[str, dict] = {}
+        if path.exists():
+            for ln in path.open(encoding="utf-8"):
+                if ln.strip():
+                    r = json.loads(ln)
+                    existing.setdefault(_slug(r.get("title") or ""), r)
+        added = 0
+        for r in recs:
+            key = _slug(r.get("title") or "")
+            if not key or key in existing:
+                continue
+            existing[key] = r
+            added += 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for r in existing.values():
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        n_lines = sum(r.get("n_lines", len(r.get("lines", []))) for r in existing.values())
+        index[aid] = {"display": recs[0]["artist"], "songs": len(existing), "lines": n_lines}
+        total_added += added
+        if added:
+            console.ok(f"{aid}: +{added} song(s) (total {len(existing)})")
+        else:
+            console.info(f"{aid}: no new songs (all titles already present)")
+    with index_path.open("w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2)
+    console.ok(f"Merged: +{total_added} song(s) across {len(by_id)} artist(s) -> lyrics/")
+    return {"added": total_added}
 
 
 def split_dataset(root: Path, val: float = 0.1, test: float = 0.05, seed: int = 42) -> Dict[str, int]:

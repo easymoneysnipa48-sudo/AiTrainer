@@ -591,6 +591,11 @@ Chief Keef, Kendrick, Gunna, Juice WRLD, Jay-Z, Kanye, Michael Jackson, …), 8
 genre templates, and an expanded mood catalog drive an offline, seedable
 engine (optional LLM backend via `MUSICTRAIN_LLM_API_KEY`).
 
+`--judge` runs an **LLM-as-judge** scorecard over the generated lyrics: it
+rates each bar on coherence, rhyme, flow, punchlines, imagery, and adherence
+(0-10), using the hosted LLM backend (or your fine-tuned `MUSICTRAIN_LLM_MODEL_PATH`
+model), and falls back to a syllable/rhyme heuristic when no LLM is configured.
+
 ```bash
 musictrain artists                 # list 22 style profiles
 musictrain artists --show future   # full profile for one artist
@@ -619,6 +624,9 @@ musictrain lyrics --analysis rec.json --vocals         # vocal/instrumental gate
 # craft & workflow (3rd batch)
 musictrain lyrics --feature verse=future+gunna         # duet (alternating bars)
 musictrain lyrics --metrics                            # rhyme density + flow score
+musictrain lyrics --judge                              # LLM-as-judge scorecard (0-10)
+musictrain lyrics --judge technical                     # judge on a named rubric
+musictrain lyrics --judge "rhyme,punchlines"            # custom dimension list
 musictrain lyrics --lrc                                # karaoke .lrc timestamps
 musictrain lyrics --project-save demo                  # save beat+lyrics+settings
 musictrain lyrics --project-load demo                  # resume a saved project
@@ -638,7 +646,20 @@ musictrain tuning --task quantize --model facebook/musicgen-small --bits 8
 musictrain tuning --task tokens --tokens "my-style" "dark-trap"   # custom style tokens
 musictrain tuning --task inversion --concept my-style --examples a.wav b.wav
 musictrain tuning --task plan --model-bytes 4000000000 --vram-bytes 8000000000
+
+# model export — ONNX / CoreML (#44)
+musictrain tuning --task export --model facebook/musicgen-small --format onnx
+musictrain tuning --task export --model facebook/musicgen-small --format coreml
+musictrain tuning --task export --component full --format onnx   # whole pipeline (optimum)
 ```
+
+`export` converts the **EnCodec decoder** (codes → waveform — a plain conv
+stack that traces cleanly) to ONNX or CoreML by default, which is the portable,
+on-device-friendly piece. `--component full` attempts the entire MusicGen
+pipeline via `optimum` and otherwise returns a plan (T5 text encoder + decoder
+transformer with KV-cache + codec isn't directly traceable). Outputs land in
+`exports/` (override with `--out`). Install the runtime deps with
+`uv pip install -e '.[onnx]'` (or `.[coreml]`, `.[export]` for optimum).
 
 ### Training your own models — lyrics + audio
 
@@ -678,6 +699,79 @@ musictrain finetune --steps 30 --lr 1e-4 --r 8 --out adapters/   # LoRA on Music
 
 **Acapella.** Same audio pipeline — normalize vocals-only WAVs and use the
 lyric transcript as the description in `labels.csv`.
+
+### Growing the lyric dataset — scrape + synthesize
+
+Two commands fill the dataset when real lyric files are scarce:
+
+```bash
+# fetch real lyrics for artist profiles — Genius API (set GENIUS_ACCESS_TOKEN)
+# or keyless lyrics.ovh fallback with curated tracklists:
+musictrain lyricscrape --artists "drake,future,lil-durk" --per-artist 15 --dry-run
+musictrain lyricscrape --artists "drake,future" --per-artist 20 --source auto
+
+# deterministic synthetic songs from the offline engine (artist x mood x topic):
+musictrain synthcorpus --artists "future,drake" --per-artist 25 --dry-run
+musictrain synthcorpus --artists all --per-artist 50
+```
+
+Both merge into `lyrics/<artist_id>/songs.jsonl` without touching existing
+songs (`append_records`), then feed the same split/train flow:
+`lyricdataset --action split` → `--action train-files` → `train-lyrics`.
+Plain-text files named `Artist - Title.txt` are also importable.
+
+### Lyrics quality gate
+
+LLM/local output is screened before it reaches you: multilingual/Chinese
+leakage, too-short or empty lines, header-less single blobs, and heavy line
+duplication are flagged, and the model retries on a different seed (API once,
+local up to 3 seeds) before falling back to the offline engine. Residual
+issues print as `Quality gate: …` in the CLI and as a warning on the 🎤
+Lyrics dashboard page; a clean result passes silently.
+
+### Audio augmentation for training
+
+`augment` now targets **segments** (default) so variants feed the fine-tune
+set directly — each variant inherits the source segment's label with the
+transform appended, and `finetune` picks them up automatically:
+
+```bash
+musictrain augment --dir segments --variants 3   # pitch ±1-3 st, stretch 0.9-1.1x, EQ, noise, gain
+musictrain finetune --steps 2 --out adapters/    # now trains on segments + augmented variants
+```
+
+### One-command retrain — `musictrain pipeline`
+
+```bash
+musictrain pipeline --dry-run                      # show the plan, run nothing
+musictrain pipeline                                # audio + lyrics prep + finetune
+musictrain pipeline --steps audio,lyrics,eval --finetune-steps 3
+musictrain pipeline --lyrics-steps 100 --no-augment
+```
+
+Runs features → segment → split → beatlabels → augment → finetune (audio),
+plus lyric split/train-files and optional `train-lyrics` (lyrics), then an
+optional eval pass.
+
+### Project tidy-up — `musictrain cleanup`
+
+```bash
+musictrain cleanup --dry-run            # report what would be removed
+musictrain cleanup --keep-eval 5        # keep 5 eval backups, drop the rest
+```
+
+Removes only transient artifacts (dashboard `session.json`, `*.tmp`/`.bak`
+leftovers, stale rotated logs, old eval backups, `__pycache__`); never touches
+`data/`, `lyrics/`, `adapters/`, or `checkpoints/`.
+
+### GPU training in Docker (Ubuntu workstation)
+
+```bash
+docker build --build-arg WITH_CUDA=1 --build-arg TORCH_INDEX=cu124 -t musictrain:cuda .
+docker run --rm --gpus all -v $PWD:/work musictrain:cuda pipeline --finetune-steps 3
+# or via compose (GPU is auto-detected by the code):
+docker compose --profile cuda up trainer
+```
 
 ### Extended evaluation — `musictrain evalx`
 

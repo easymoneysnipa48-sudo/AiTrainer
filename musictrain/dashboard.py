@@ -190,10 +190,11 @@ _WEB_FONTS = {
 
 
 def _theme_css() -> str:
-    light = st.session_state.get("mt_theme") == "light"
+    mode = st.session_state.get("mt_theme_mode", "dark")
+    light = (_os_theme() if mode == "system" else mode) == "light"
     base = _LIGHT_CSS if light else _DARK_CSS
-    accent = st.session_state.get("mt_accent", "#5b8cff")
-    font_name = st.session_state.get("mt_font", "System")
+    accent = _ACCENTS.get(st.session_state.get("mt_accent_label"), "#5b8cff")
+    font_name = st.session_state.get("mt_font_name", "System")
     font = _FONTS.get(font_name, _FONTS["System"])
     import_url = _WEB_FONTS.get(font_name, "")
     fonts_import = (
@@ -330,57 +331,22 @@ _ACCENTS = {
 }
 
 
-def _apply_theme(mode: str) -> None:
-    """Resolve a theme mode into session state and resync both controls.
-
-    ``mt_theme_mode`` (dark/light/system) and ``mt_theme`` (concrete dark/light)
-    are plain session keys — never widget keys — so both the sidebar and the
-    Settings page can update them freely. Dropping the widget caches makes the
-    two controls re-read the canonical mode instead of drifting apart.
-    """
-    st.session_state["mt_theme_mode"] = mode
-    st.session_state["mt_theme"] = _os_theme() if mode == "system" else mode
-    for key in ("mt_theme_side", "set_theme_mode"):
-        st.session_state.pop(key, None)
-
-
-def _apply_accent(color: str) -> None:
-    """Set the accent token and resync the sidebar + Settings pickers."""
-    st.session_state["mt_accent"] = color
-    for key in ("mt_accent_side", "set_accent_pick"):
-        st.session_state.pop(key, None)
-
-
 def _toggle_theme() -> None:
-    """Theme selector (dark / light / system) — features 1 & 67."""
-    mode = st.segmented_control(
-        "🎨 Theme", ["dark", "light", "system"],
-        default=st.session_state.get("mt_theme_mode", "dark"),
-        key="mt_theme_side",
-    )
-    if mode:
-        _apply_theme(mode)
+    """Theme selector (dark / light / system) + accent + font pickers.
 
-    # accent-color token picker (theme tokens)
-    cur = st.session_state.get("mt_accent", "#5b8cff")
-    label = next((k for k, v in _ACCENTS.items() if v == cur), "💙 Blue")
-    pick = st.selectbox(
-        "🖌️ Accent", list(_ACCENTS.keys()),
-        index=list(_ACCENTS.keys()).index(label), key="mt_accent_side",
+    The sidebar and the Settings page share one canonical widget key per
+    control (``mt_theme_mode`` / ``mt_accent_label`` / ``mt_font_name``), so
+    the widget value *is* the app state — no defaults derived from state and
+    no key pops, which previously churned widget IDs and forced a second
+    click. The sidebar copy is hidden on the Settings page, which renders
+    its own controls with the same keys.
+    """
+    st.segmented_control(
+        "🎨 Theme", ["dark", "light", "system"], key="mt_theme_mode",
+        help="Dark / light / follow your OS — applies instantly.",
     )
-    if _ACCENTS[pick] != st.session_state.get("mt_accent"):
-        _apply_accent(_ACCENTS[pick])
-
-    font_cur = st.session_state.get("mt_font", "System")
-    font_pick = st.selectbox(
-        "✒️ Font", list(_FONTS.keys()),
-        index=list(_FONTS.keys()).index(font_cur) if font_cur in _FONTS else 0,
-        key="mt_font_side",
-    )
-    if font_pick != font_cur:
-        st.session_state["mt_font"] = font_pick
-        for k in ("set_font_pick",):
-            st.session_state.pop(k, None)
+    st.selectbox("🖌️ Accent", list(_ACCENTS.keys()), key="mt_accent_label")
+    st.selectbox("✒️ Font", list(_FONTS.keys()), key="mt_font_name")
 
 
 # --------------------------------------------------------------------------- #
@@ -1438,7 +1404,7 @@ def _session_resume() -> None:
     try:
         if sfile.exists():
             data = json.loads(sfile.read_text())
-            for k in ("nav", "mt_theme", "mt_theme_mode", "mt_accent", "mt_font", "mt_focus", "mt_pinned", "mt_lang"):
+            for k in ("nav", "mt_theme_mode", "mt_accent_label", "mt_font_name", "mt_focus", "mt_pinned", "mt_lang"):
                 if k not in st.session_state and k in data:
                     st.session_state[k] = data[k]
     except Exception:  # noqa: BLE001
@@ -4299,33 +4265,21 @@ def page_settings() -> None:
     # ---------------- Appearance ---------------- #
     st.subheader("🎨 Appearance")
     ac1, ac2 = st.columns(2)
-    mode = ac1.segmented_control(
-        "Theme", ["dark", "light", "system"],
-        default=st.session_state.get("mt_theme_mode", "dark"),
-        key="set_theme_mode",
-    )
-    if mode and mode != st.session_state.get("mt_theme_mode"):
-        _apply_theme(mode)
+    # Same canonical keys as the sidebar controls (sidebar copy is hidden on
+    # this page), so one click applies — no key pops, no drift between them.
+    mode_before = st.session_state.get("mt_theme_mode", "dark")
+    mode = ac1.segmented_control("Theme", ["dark", "light", "system"], key="mt_theme_mode")
+    if mode != mode_before:
         st.rerun()
 
-    cur = st.session_state.get("mt_accent", cfg.settings.accent or "#5b8cff")
-    label = next((k for k, v in _ACCENTS.items() if v == cur), "💙 Blue")
-    accent = ac2.selectbox(
-        "🖌️ Accent", list(_ACCENTS.keys()),
-        index=list(_ACCENTS.keys()).index(label), key="set_accent_pick",
-    )
-    if _ACCENTS[accent] != st.session_state.get("mt_accent"):
-        _apply_accent(_ACCENTS[accent])
+    accent_before = st.session_state.get("mt_accent_label") or "💙 Blue"
+    accent = ac2.selectbox("🖌️ Accent", list(_ACCENTS.keys()), key="mt_accent_label")
+    if accent != accent_before:
         st.rerun()
 
-    font_cur = st.session_state.get("mt_font", "System")
-    font = ac2.selectbox(
-        "✒️ Font", list(_FONTS.keys()),
-        index=list(_FONTS.keys()).index(font_cur) if font_cur in _FONTS else 0,
-        key="set_font_pick",
-    )
-    if font != font_cur:
-        st.session_state["mt_font"] = font
+    font_before = st.session_state.get("mt_font_name") or "System"
+    font = ac2.selectbox("✒️ Font", list(_FONTS.keys()), key="mt_font_name")
+    if font != font_before:
         st.rerun()
     st.caption(f"Aa Bb Cc 123 — {font} preview")
 
@@ -4400,7 +4354,9 @@ def page_settings() -> None:
         cfg.settings.upload_dir = up_dir_raw
         cfg.settings.download_dir = dn_dir_raw
         cfg.settings.theme = st.session_state.get("mt_theme_mode", "dark")
-        cfg.settings.accent = st.session_state.get("mt_accent", "#5b8cff")
+        cfg.settings.accent = _ACCENTS.get(
+            st.session_state.get("mt_accent_label"), cfg.settings.accent or "#5b8cff"
+        )
         cfg.settings.default_model = cfg.inference.model_name
         cfg.settings.lang = st.session_state.get("mt_lang", "en")
         cfg.save(cfg_path)
@@ -4524,7 +4480,7 @@ def _inspector() -> None:
     """Feature 58: compact inspector drawer of session state."""
     with st.expander("ℹ️ Inspector"):
         st.caption(f"page: `{st.session_state.get('nav', '—')}`")
-        st.caption(f"theme: `{st.session_state.get('mt_theme', 'dark')}`")
+        st.caption(f"theme: `{st.session_state.get('mt_theme_mode', 'dark')}`")
         st.caption(f"history: {len(st.session_state.get('mt_history', []))} pages")
         st.caption(f"pinned: {len(st.session_state.get('mt_pinned', []))}")
 
@@ -4615,7 +4571,10 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### 🎵 MusicTrain")
         st.caption(f"Project: `{ROOT.name}`")
-        _toggle_theme()
+        # sidebar theme controls share keys with the Settings page, so they
+        # are hidden here to avoid duplicate widget keys (Settings has its own)
+        if st.session_state.get("nav", list(PAGES.keys())[0]) != "⚙️ Settings":
+            _toggle_theme()
         st.toggle("🎯 Focus mode", value=st.session_state.get("mt_focus", False), key="mt_focus_toggle")
         focus = st.session_state["mt_focus_toggle"]
         if not focus:
@@ -4653,10 +4612,9 @@ def main() -> None:
         sfile.parent.mkdir(parents=True, exist_ok=True)
         sfile.write_text(json.dumps({
             "nav": choice,
-            "mt_theme": st.session_state.get("mt_theme"),
             "mt_theme_mode": st.session_state.get("mt_theme_mode"),
-            "mt_accent": st.session_state.get("mt_accent"),
-            "mt_font": st.session_state.get("mt_font"),
+            "mt_accent_label": st.session_state.get("mt_accent_label"),
+            "mt_font_name": st.session_state.get("mt_font_name"),
             "mt_focus": st.session_state.get("mt_focus", False),
             "mt_pinned": st.session_state.get("mt_pinned", []),
             "mt_lang": st.session_state.get("mt_lang", "en"),
